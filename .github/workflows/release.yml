@@ -1,0 +1,66 @@
+name: Release saas_media_library (manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to release (e.g. 0.1.1)
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate version format
+        run: |
+          if ! [[ "${{ inputs.version }}" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z]+)?$ ]]; then
+            echo "Invalid version format: ${{ inputs.version }}" >&2
+            exit 1
+          fi
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Build artifacts (sdist + wheel)
+        run: |
+          python -m pip install --upgrade pip
+          pip install build
+          python -m build
+
+      - name: Capture artifact names
+        id: artifacts
+        run: |
+          set -e
+          WHEEL=$(ls -1 dist/*.whl | head -n1 || true)
+          SDIST=$(ls -1 dist/*.tar.gz | head -n1 || true)
+          echo "wheel_name=$(basename "$WHEEL")" >> "$GITHUB_OUTPUT"
+          echo "sdist_name=$(basename "$SDIST")" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: saas_media_library-v${{ inputs.version }}
+          target_commitish: ${{ github.sha }}
+          name: saas_media_library v${{ inputs.version }}
+          fail_on_unmatched_files: false
+          body: |
+            Install from the tag (no PyPI):
+
+            pip install "git+https://github.com/${{ github.repository }}.git@saas_media_library-v${{ inputs.version }}"
+
+            Or install the wheel directly from this release (public repo):
+
+            pip install "https://github.com/${{ github.repository }}/releases/download/saas_media_library-v${{ inputs.version }}/${{ steps.artifacts.outputs.wheel_name }}"
+          files: |
+            dist/*

@@ -1,0 +1,129 @@
+name: Auto Release saas_media_library (minor)
+
+on:
+  push:
+    branches: [ main ]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Bump minor, tag, release
+    runs-on: ubuntu-latest
+    if: ${{ !contains(github.event.head_commit.message, '[skip ci]') }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Compute next minor version
+        id: version
+        run: |
+          set -euo pipefail
+          # Extract version from file at repo root
+          FILE_VER=$(sed -n 's/^version = "\(.*\)"$/\1/p' "pyproject.toml" | head -n1 || true)
+
+          # Latest tag matching saas_media_library
+          LATEST_TAG=$(git tag -l 'saas_media_library-v*' | sed -E 's/^saas_media_library-v//' | sort -V | tail -n1 || true)
+
+          # Choose baseline = max(FILE_VER, LATEST_TAG)
+          BASELINE=$(printf '%s\n%s\n' "$FILE_VER" "$LATEST_TAG" | sed '/^$/d' | sort -V | tail -n1)
+          if [ -z "$BASELINE" ]; then
+            echo "No baseline version found; defaulting to 0.1.0" >&2
+            BASELINE="0.1.0"
+          fi
+
+          # Parse and bump minor
+          MAJOR=$(echo "$BASELINE" | awk -F. '{print $1}')
+          MINOR=$(echo "$BASELINE" | awk -F. '{print $2}')
+          PATCH=$(echo "$BASELINE" | awk -F. '{print $3}' | sed 's/[^0-9].*$//')
+          if ! [[ $MAJOR =~ ^[0-9]+$ && $MINOR =~ ^[0-9]+$ ]]; then
+            echo "Baseline version not semver-like: $BASELINE" >&2
+            exit 1
+          fi
+          NEW_MINOR=$((MINOR + 1))
+          NEW_VER="${MAJOR}.${NEW_MINOR}.0"
+
+          # Ensure tag uniqueness; bump until free
+          while git rev-parse -q --verify "refs/tags/saas_media_library-v${NEW_VER}" >/dev/null; do
+            NEW_MINOR=$((NEW_MINOR + 1))
+            NEW_VER="${MAJOR}.${NEW_MINOR}.0"
+          done
+
+          echo "new=$NEW_VER" >> "$GITHUB_OUTPUT"
+          echo "baseline=$BASELINE" >> "$GITHUB_OUTPUT"
+          echo "file=$FILE_VER" >> "$GITHUB_OUTPUT"
+          echo "tag=saas_media_library-v$NEW_VER" >> "$GITHUB_OUTPUT"
+          echo "Next version: $NEW_VER (baseline: $BASELINE)"
+
+      - name: Update pyproject.toml version
+        run: |
+          NEW_VER='${{ steps.version.outputs.new }}'
+          if [ -z "$NEW_VER" ]; then echo "Missing new version" >&2; exit 1; fi
+          # Replace the first occurrence of version = "..."
+          sed -i.bak -e "0,/^version = \".*\"/s//version = \"$NEW_VER\"/" pyproject.toml
+          rm -f pyproject.toml.bak
+          echo "pyproject.toml updated to $NEW_VER"
+
+      - name: Commit version bump
+        env:
+          NEW_VER: ${{ steps.version.outputs.new }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add pyproject.toml
+          git commit -m "chore(saas_media_library): release v${NEW_VER} [skip ci]" || echo "No changes to commit"
+          git push origin HEAD:${{ github.ref_name }} || true
+
+      - name: Create tag
+        env:
+          NEW_VER: ${{ steps.version.outputs.new }}
+        run: |
+          set -e
+          TAG="saas_media_library-v${NEW_VER}"
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            echo "Tag $TAG already exists locally"; else
+            git tag -a "$TAG" -m "saas_media_library $NEW_VER"
+          fi
+          git push origin "$TAG"
+
+      - name: Build artifacts (sdist + wheel)
+        run: |
+          python -m pip install --upgrade pip
+          pip install build
+          python -m build
+
+      - name: Capture artifact names
+        id: artifacts
+        run: |
+          set -e
+          WHEEL=$(ls -1 dist/*.whl | head -n1 || true)
+          SDIST=$(ls -1 dist/*.tar.gz | head -n1 || true)
+          echo "wheel_name=$(basename "$WHEEL")" >> "$GITHUB_OUTPUT"
+          echo "sdist_name=$(basename "$SDIST")" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release and upload artifacts
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: saas_media_library v${{ steps.version.outputs.new }}
+          body: |
+            Auto release for saas_media_library.
+
+            Install directly from the tag:
+
+            pip install "git+https://github.com/${{ github.repository }}.git@${{ steps.version.outputs.tag }}"
+
+            Or install the wheel directly from the release (public repo):
+
+            pip install "https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.tag }}/${{ steps.artifacts.outputs.wheel_name }}"
+          files: |
+            dist/*
