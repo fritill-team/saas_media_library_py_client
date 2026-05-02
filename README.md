@@ -52,7 +52,8 @@ client.policies.sync_policies([
         "visibility": Visibility.PUBLIC,
         "allowed_mime_types": {"image/jpeg", "image/png", "image/webp"},
         "max_size_bytes": 5_000_000,
-        "auto_process": True,
+        # Pre-configure step_options so the pipeline runs fully automatically.
+        # Without options, configurable steps pause for user input.
         "step_options": {
             "image_derive": {"formats": ["webp"], "sizes": [256, 512, 1024]}
         },
@@ -64,7 +65,11 @@ client.policies.sync_policies([
         "visibility": Visibility.RESTRICTED,
         "allowed_mime_types": {"video/mp4", "video/quicktime"},
         "max_size_bytes": 2_000_000_000,
-        "auto_process": True,
+        "step_options": {
+            "video_transcode": {"crf": 23, "preset": "fast"},
+            "video_adaptive_stream": {"formats": ["hls"], "resolutions": [360, 720, 1080]},
+            "video_thumbnail": {"timestamp": 1.0},
+        },
     },
     {
         "resource_type": "courses",
@@ -73,7 +78,6 @@ client.policies.sync_policies([
         "visibility": Visibility.PRIVATE,
         "allowed_mime_types": {"application/pdf"},
         "max_size_bytes": 50_000_000,
-        "auto_process": True,
     },
 ])
 
@@ -90,7 +94,7 @@ policy = client.policies.upsert(
     visibility=Visibility.PUBLIC,
     allowed_mime_types={"image/jpeg", "image/png"},
     max_size_bytes=10_000_000,
-    auto_process=True,
+    step_options={"image_derive": {"formats": ["webp"], "sizes": [256, 512]}},
 )
 
 # Get / list
@@ -213,7 +217,7 @@ client.policies.sync_policies([
         "visibility": Visibility.PUBLIC,
         "allowed_mime_types": {"image/jpeg", "image/png", "image/webp"},
         "max_size_bytes": 5_000_000,
-        "auto_process": True,
+        "step_options": {"image_derive": {"formats": ["webp"], "sizes": [256, 512]}},
     },
     # ... more policies
 ])

@@ -59,11 +59,12 @@ class PermissionRequirements(BaseModel):
 
 
 class ProcessingConfig(BaseModel):
-    auto_process: bool = Field(False, alias="autoProcess")
     step_options: Optional[Dict[str, Dict[str, Any]]] = Field(None, alias="stepOptions")
     use_filename_as_asset_id: bool = Field(False, alias="useFilenameAsAssetId")
 
-    model_config = {"populate_by_name": True}
+    # Ignore unknown fields (e.g., legacy `autoProcess`) so older API responses
+    # don't break the client.
+    model_config = {"populate_by_name": True, "extra": "ignore"}
 
 
 class ResourcePolicy(BaseModel):
@@ -84,6 +85,41 @@ class ResourcePolicy(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+# ── Rendition models ───────────────────────────────────────────────────
+
+class RenditionVariant(BaseModel):
+    name: str
+    entrypoint: str
+    locale: Optional[str] = None
+    width: Optional[int] = None
+    height: Optional[int] = None
+    bitrate_kbps: Optional[int] = Field(None, alias="bitrateKbps")
+    frame_rate: Optional[float] = Field(None, alias="frameRate")
+    channels: Optional[int] = None
+    blob_ids: List[UUID] = Field(default_factory=list, alias="blobIds")
+    extras: Dict[str, Any] = Field(default_factory=dict)
+
+    model_config = {"populate_by_name": True}
+
+
+class Rendition(BaseModel):
+    id: UUID
+    rendition_type: str = Field(alias="renditionType")
+    entrypoint: str
+    storage_prefix: Optional[str] = Field(None, alias="storagePrefix")
+    blob_ids: List[UUID] = Field(default_factory=list, alias="blobIds")
+    variants: List[RenditionVariant] = Field(default_factory=list)
+    duration_seconds: Optional[float] = Field(None, alias="durationSeconds")
+    pages: Optional[int] = None
+    channels: Optional[int] = None
+    status: str
+    extras: Dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(alias="createdAt")
+    updated_at: datetime = Field(alias="updatedAt")
+
+    model_config = {"populate_by_name": True}
+
+
 # ── Asset models ───────────────────────────────────────────────────────
 
 class Asset(BaseModel):
@@ -98,10 +134,8 @@ class Asset(BaseModel):
     visibility: Visibility
     created_at: datetime = Field(alias="createdAt")
     blob_id: Optional[UUID] = Field(None, alias="blobId")
-    download_type: str = Field(alias="downloadType")
-    download_url: Optional[str] = Field(None, alias="downloadUrl")
-    download_url_expires_in: Optional[int] = Field(None, alias="downloadUrlExpiresIn")
     resource_policy_id: Optional[UUID] = Field(None, alias="resourcePolicyId")
+    renditions: List[Rendition] = Field(default_factory=list)
 
     model_config = {"populate_by_name": True}
 

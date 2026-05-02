@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import warnings
 from typing import Any, Dict, List, Optional, Set
 from uuid import UUID
 
@@ -43,15 +44,34 @@ class ResourcePoliciesAPI:
         allow_multiple: bool = False,
         required_permissions: Optional[Set[str]] = None,
         allow_anonymous: bool = False,
-        auto_process: bool = False,
         step_options: Optional[Dict[str, Dict[str, Any]]] = None,
         use_filename_as_asset_id: bool = False,
+        **deprecated_kwargs: Any,
     ) -> ResourcePolicy:
         """Create or update a resource policy.
 
         If a policy already exists for (tenant, resource_type, collection_name),
         it will be updated and its version incremented.
+
+        Note:
+            ``auto_process`` was removed. Processing always starts on upload
+            finalization. Configurable steps without pre-configured options
+            in ``step_options`` will pause for user input (PENDING_INPUT).
         """
+        if "auto_process" in deprecated_kwargs:
+            warnings.warn(
+                "auto_process is deprecated and ignored. Processing always starts "
+                "on upload finalization. Use step_options to pre-configure steps "
+                "so they run automatically; otherwise they will pause for user input.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            deprecated_kwargs.pop("auto_process")
+        if deprecated_kwargs:
+            raise TypeError(
+                f"upsert() got unexpected keyword arguments: {list(deprecated_kwargs)}"
+            )
+
         payload: Dict[str, Any] = {
             "resourceType": resource_type,
             "kind": str(kind),
@@ -67,7 +87,6 @@ class ResourcePoliciesAPI:
                 "allowAnonymous": allow_anonymous,
             },
             "processingConfig": {
-                "autoProcess": auto_process,
                 "stepOptions": step_options,
                 "useFilenameAsAssetId": use_filename_as_asset_id,
             },
@@ -184,7 +203,9 @@ class ResourcePoliciesAPI:
                     "visibility": "public",
                     "allowed_mime_types": {"image/jpeg", "image/png", "image/webp"},
                     "max_size_bytes": 5_000_000,
-                    "auto_process": True,
+                    # Pre-configure step_options so the pipeline runs fully
+                    # automatically. Without options, configurable steps would
+                    # pause for user input (PENDING_INPUT).
                     "step_options": {
                         "image_derive": {"formats": ["webp"], "sizes": [256, 512, 1024]}
                     },
@@ -196,7 +217,11 @@ class ResourcePoliciesAPI:
                     "visibility": "restricted",
                     "allowed_mime_types": {"video/mp4", "video/quicktime"},
                     "max_size_bytes": 2_000_000_000,
-                    "auto_process": True,
+                    "step_options": {
+                        "video_transcode": {"crf": 23, "preset": "fast"},
+                        "video_adaptive_stream": {"formats": ["hls"], "resolutions": [360, 720, 1080]},
+                        "video_thumbnail": {"timestamp": 1.0},
+                    },
                 },
             ])
         """
