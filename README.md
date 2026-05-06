@@ -86,10 +86,16 @@ client.close()
 
 ### Individual operations
 
+Policies can be addressed either by UUID or by their natural name pair
+`(resource_type, collection_name)` — the same key used at definition time.
+Use whichever is more convenient; consumer services rarely need to remember
+UUIDs.
+
 ```python
 # Upsert a single policy
 policy = client.policies.upsert(
     resource_type="products",
+    collection_name="cover",
     kind=AssetKind.IMAGE,
     visibility=Visibility.PUBLIC,
     allowed_mime_types={"image/jpeg", "image/png"},
@@ -97,16 +103,24 @@ policy = client.policies.upsert(
     step_options={"image_derive": {"formats": ["webp"], "sizes": [256, 512]}},
 )
 
-# Get / list
+# Get by name (composite key) — no UUID needed
+policy = client.policies.get_by_name("products", "cover")
+
+# Get by UUID still works
 policy = client.policies.get(policy.id)
+
+# List
 all_policies = client.policies.list()
 image_policies = client.policies.list(resource_type="products")
+single = client.policies.list(resource_type="products", collection_name="cover")
 
-# Activate / deactivate
-client.policies.deactivate(policy.id)
-client.policies.activate(policy.id)
+# Activate / deactivate — by name or by id
+client.policies.deactivate(resource_type="products", collection_name="cover")
+client.policies.activate(resource_type="products", collection_name="cover")
+client.policies.deactivate(policy.id)  # still supported
 
-# Hard delete
+# Hard delete — by name or by id
+client.policies.delete(resource_type="products", collection_name="cover", hard=True)
 client.policies.delete(policy.id, hard=True)
 ```
 
