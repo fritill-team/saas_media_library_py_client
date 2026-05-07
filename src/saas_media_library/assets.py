@@ -5,7 +5,7 @@ from uuid import UUID
 
 import httpx
 
-from saas_media_library.client import raise_for_status
+from saas_media_library._http import raise_for_status
 from saas_media_library.models import (
     Asset,
     AssetKind,
