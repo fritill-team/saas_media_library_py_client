@@ -290,81 +290,54 @@ class ResourcePoliciesAPI:
 
     # ── Bulk helpers (init container use case) ─────────────────────────
 
-    def sync_policies(self, policies: List[Dict[str, Any]]) -> List[ResourcePolicy]:
-        """Upsert multiple policies at once.
+    def sync_policies(
+        self,
+        policies: List[Dict[str, Any]],
+        *,
+        delete_stale: bool = True,
+        hard_delete: bool = False,
+    ) -> List[ResourcePolicy]:
+        """Declarative sync: ensure the tenant has exactly these policies.
 
-        Each dict in the list is passed as kwargs to upsert().
-        Useful for init container jobs that declare all policies at startup.
+        Compares the desired ``policies`` list against the existing policies
+        by their ``(resource_type, collection_name)`` composite key:
 
-        Example::
+        - **Match** → upsert (update) the existing policy
+        - **New** → create the policy
+        - **Stale** (exists remotely but not in the list) → delete
 
-            client.policies.sync_policies([
-                {
-                    "resource_type": "courses",
-                    "collection_name": "cover",
-                    "kind": "image",
-                    "visibility": "public",
-                    "allowed_mime_types": {"image/jpeg", "image/png", "image/webp"},
-                    "max_size_bytes": 5_000_000,
-                    # Pre-configure step_options so the pipeline runs fully
-                    # automatically. Without options, configurable steps would
-                    # pause for user input (PENDING_INPUT).
-                    "step_options": {
-                        "image_derive": {"formats": ["webp"], "sizes": [256, 512, 1024]}
-                    },
-                },
-                {
-                    "resource_type": "courses",
-                    "collection_name": "video",
-                    "kind": "video",
-                    "visibility": "restricted",
-                    "allowed_mime_types": {"video/mp4", "video/quicktime"},
-                    "max_size_bytes": 2_000_000_000,
-                    "step_options": {
-                        "video_transcode": {"crf": 23, "preset": "fast"},
-                        "video_adaptive_stream": {"formats": ["hls"], "resolutions": [360, 720, 1080]},
-                        "video_thumbnail": {"timestamp": 1.0},
-                    },
-                },
-                {
-                    # ZIP of images → fans out one child IMAGE asset per file.
-                    # Pipeline: virus_scan -> zip_image_extract.
-                    # The MIME type MUST be application/zip (or
-                    # application/x-zip-compressed) — image_batch does NOT
-                    # accept image/* uploads directly.
-                    "resource_type": "courses",
-                    "collection_name": "gallery",
-                    "kind": "image_batch",
-                    "visibility": "public",
-                    "allowed_mime_types": {
-                        "application/zip",
-                        "application/x-zip-compressed",
-                    },
-                    "max_size_bytes": 200_000_000,
-                    "step_options": {
-                        # zip_image_extract controls which entries inside the
-                        # ZIP get unpacked. Anything not matching is skipped
-                        # (not failed) and reported in metadata.skipped_files.
-                        "zip_image_extract": {
-                            "allowed_extensions": [".jpg", ".jpeg", ".png", ".webp"],
-                            # auto_process_children=True triggers the full
-                            # IMAGE pipeline (virus_scan -> image_derive ->
-                            # relocate_to_bucket) for each extracted file.
-                            # Set False if you only want the originals stored
-                            # without derivatives.
-                            "auto_process_children": True,
-                        },
-                    },
-                    # NOTE: child IMAGE assets are triggered with options={};
-                    # they do NOT inherit step_options from this policy and do
-                    # NOT look up a separate IMAGE policy. image_derive for the
-                    # children always runs with defaults (webp @ 256/512/1024,
-                    # quality 85). To customise child processing you have to
-                    # change the processor defaults, not this policy.
-                },
-            ])
+        Args:
+            policies: List of dicts, each passed as kwargs to ``upsert()``.
+            delete_stale: If True (default), policies that exist on the server
+                but are not in the list will be deleted.
+            hard_delete: If True, stale policies are hard-deleted (permanent).
+                If False (default), they are soft-deleted (deactivated).
+
+        Returns:
+            List of upserted ``ResourcePolicy`` objects (does not include deleted ones).
         """
+        # Build a set of desired keys
+        desired_keys = {
+            (spec["resource_type"], spec.get("collection_name"))
+            for spec in policies
+        }
+
+        # Fetch all existing policies for this tenant
+        existing = self.list()
+        existing_by_key = {
+            (p.resource_type, p.collection_name): p
+            for p in existing
+        }
+
+        # Upsert desired policies (create or update)
         results = []
         for spec in policies:
             results.append(self.upsert(**spec))
+
+        # Delete stale policies not in the desired list
+        if delete_stale:
+            for key, policy in existing_by_key.items():
+                if key not in desired_keys:
+                    self.delete(policy_id=policy.id, hard=hard_delete)
+
         return results
