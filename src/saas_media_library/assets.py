@@ -5,7 +5,7 @@ from uuid import UUID
 
 import httpx
 
-from saas_media_library.client import raise_for_status
+from saas_media_library._http import raise_for_status
 from saas_media_library.models import (
     Asset,
     AssetKind,
@@ -15,6 +15,7 @@ from saas_media_library.models import (
     DeliveryBatchResolveResult,
     PaginatedAssets,
     PaginatedDeliveryAssets,
+    Visibility,
 )
 
 
@@ -64,6 +65,23 @@ class AssetsAPI:
         """Delete an asset and all related records."""
         resp = self._http.delete(f"{self.MANAGE_BASE}/{asset_id}")
         raise_for_status(resp)
+
+    def update_visibility(
+        self,
+        asset_id: UUID | str,
+        visibility: Visibility | str,
+    ) -> Asset:
+        """Change an asset's visibility tier.
+
+        v1 supports PRIVATE <-> RESTRICTED only. PUBLIC transitions raise
+        ``ValidationError``.
+        """
+        resp = self._http.patch(
+            f"{self.MANAGE_BASE}/{asset_id}",
+            json={"visibility": str(visibility)},
+        )
+        raise_for_status(resp)
+        return Asset.model_validate(resp.json())
 
     # ── Delivery endpoints (public / client-facing) ────────────────────
 

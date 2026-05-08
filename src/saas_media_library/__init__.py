@@ -1,4 +1,5 @@
 from saas_media_library.client import MediaLibraryClient
+from saas_media_library.asset_access import AssetAccessAPI
 from saas_media_library.models import (
     AssetKind,
     AssetStatus,
@@ -8,6 +9,7 @@ from saas_media_library.models import (
     ProcessingConfig,
     ResourcePolicy,
     Asset,
+    AssetAccessGrant,
     Rendition,
     RenditionVariant,
     DeliveryAsset,
@@ -23,6 +25,7 @@ from saas_media_library.exceptions import (
 
 __all__ = [
     "MediaLibraryClient",
+    "AssetAccessAPI",
     "AssetKind",
     "AssetStatus",
     "Visibility",
@@ -31,6 +34,7 @@ __all__ = [
     "ProcessingConfig",
     "ResourcePolicy",
     "Asset",
+    "AssetAccessGrant",
     "Rendition",
     "RenditionVariant",
     "DeliveryAsset",
@@ -42,4 +46,4 @@ __all__ = [
     "ValidationError",
 ]
 
-__version__ = "0.1.0"
+__version__ = "0.5.0"
