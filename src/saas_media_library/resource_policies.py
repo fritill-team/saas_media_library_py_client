@@ -326,6 +326,42 @@ class ResourcePoliciesAPI:
                         "video_thumbnail": {"timestamp": 1.0},
                     },
                 },
+                {
+                    # ZIP of images → fans out one child IMAGE asset per file.
+                    # Pipeline: virus_scan -> zip_image_extract.
+                    # The MIME type MUST be application/zip (or
+                    # application/x-zip-compressed) — image_batch does NOT
+                    # accept image/* uploads directly.
+                    "resource_type": "courses",
+                    "collection_name": "gallery",
+                    "kind": "image_batch",
+                    "visibility": "public",
+                    "allowed_mime_types": {
+                        "application/zip",
+                        "application/x-zip-compressed",
+                    },
+                    "max_size_bytes": 200_000_000,
+                    "step_options": {
+                        # zip_image_extract controls which entries inside the
+                        # ZIP get unpacked. Anything not matching is skipped
+                        # (not failed) and reported in metadata.skipped_files.
+                        "zip_image_extract": {
+                            "allowed_extensions": [".jpg", ".jpeg", ".png", ".webp"],
+                            # auto_process_children=True triggers the full
+                            # IMAGE pipeline (virus_scan -> image_derive ->
+                            # relocate_to_bucket) for each extracted file.
+                            # Set False if you only want the originals stored
+                            # without derivatives.
+                            "auto_process_children": True,
+                        },
+                    },
+                    # NOTE: child IMAGE assets are triggered with options={};
+                    # they do NOT inherit step_options from this policy and do
+                    # NOT look up a separate IMAGE policy. image_derive for the
+                    # children always runs with defaults (webp @ 256/512/1024,
+                    # quality 85). To customise child processing you have to
+                    # change the processor defaults, not this policy.
+                },
             ])
         """
         results = []
