@@ -47,6 +47,7 @@ class ResourcePoliciesAPI:
         allow_anonymous: bool = False,
         step_options: Optional[Dict[str, Dict[str, Any]]] = None,
         use_filename_as_asset_id: bool = False,
+        enable_transcription: bool = False,
         **deprecated_kwargs: Any,
     ) -> ResourcePolicy:
         """Create or update a resource policy.
@@ -90,6 +91,7 @@ class ResourcePoliciesAPI:
             "processingConfig": {
                 "stepOptions": step_options,
                 "useFilenameAsAssetId": use_filename_as_asset_id,
+                "enableTranscription": enable_transcription,
             },
         }
         if collection_name is not None:
@@ -316,16 +318,22 @@ class ResourcePoliciesAPI:
         Returns:
             List of upserted ``ResourcePolicy`` objects (does not include deleted ones).
         """
-        # Build a set of desired keys
+        # Normalize keys the same way the server does
+        # (domain/entities/resource_policy.py: lower().strip()) so that case or
+        # whitespace differences between caller specs and stored values don't
+        # cause sync_policies to flag just-upserted policies as stale.
+        def _norm(s: Optional[str]) -> Optional[str]:
+            return s.lower().strip() if isinstance(s, str) else s
+
         desired_keys = {
-            (spec["resource_type"], spec.get("collection_name"))
+            (_norm(spec["resource_type"]), _norm(spec.get("collection_name")))
             for spec in policies
         }
 
         # Fetch all existing policies for this tenant
         existing = self.list()
         existing_by_key = {
-            (p.resource_type, p.collection_name): p
+            (_norm(p.resource_type), _norm(p.collection_name)): p
             for p in existing
         }
 
