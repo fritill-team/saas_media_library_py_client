@@ -61,7 +61,7 @@ class PermissionRequirements(BaseModel):
 class ProcessingConfig(BaseModel):
     step_options: Optional[Dict[str, Dict[str, Any]]] = Field(None, alias="stepOptions")
     use_filename_as_asset_id: bool = Field(False, alias="useFilenameAsAssetId")
-    enable_transcription: bool = Field(False, alias="enableTranscription")
+    enable_transcription: bool = Field(True, alias="enableTranscription")
 
     # Ignore unknown fields (e.g., legacy `autoProcess`) so older API responses
     # don't break the client.

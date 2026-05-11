@@ -47,7 +47,7 @@ class ResourcePoliciesAPI:
         allow_anonymous: bool = False,
         step_options: Optional[Dict[str, Dict[str, Any]]] = None,
         use_filename_as_asset_id: bool = False,
-        enable_transcription: bool = False,
+        enable_transcription: bool = True,
         **deprecated_kwargs: Any,
     ) -> ResourcePolicy:
         """Create or update a resource policy.
