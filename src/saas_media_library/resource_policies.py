@@ -48,7 +48,6 @@ class ResourcePoliciesAPI:
         step_options: Optional[Dict[str, Dict[str, Any]]] = None,
         use_filename_as_asset_id: bool = False,
         enable_transcription: bool = True,
-        is_active: bool = True,
         **deprecated_kwargs: Any,
     ) -> ResourcePolicy:
         """Create or update a resource policy.
@@ -95,7 +94,6 @@ class ResourcePoliciesAPI:
                 "enableTranscription": enable_transcription,
             },
         }
-        payload["isActive"] = is_active
         if collection_name is not None:
             payload["collectionName"] = collection_name
 
