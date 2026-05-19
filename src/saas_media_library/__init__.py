@@ -46,4 +46,9 @@ __all__ = [
     "ValidationError",
 ]
 
-__version__ = "0.5.0"
+from importlib.metadata import PackageNotFoundError, version
+
+try:
+    __version__ = version("saas-media-library")
+except PackageNotFoundError:
+    __version__ = "unknown"
