@@ -19,6 +19,18 @@ from saas_media_library.models import (
 )
 
 
+class BulkVisibilityResult:
+    """Result of a bulk visibility update operation."""
+
+    def __init__(self, items: List[Dict[str, Any]], updated: int, failed: int):
+        self.items = items
+        self.updated = updated
+        self.failed = failed
+
+    def __repr__(self) -> str:
+        return f"BulkVisibilityResult(updated={self.updated}, failed={self.failed})"
+
+
 class AssetsAPI:
     """Access and manage assets.
 
@@ -83,6 +95,26 @@ class AssetsAPI:
         )
         raise_for_status(resp)
         return Asset.model_validate(resp.json())
+
+    def bulk_update_visibility(
+        self,
+        asset_ids: List[UUID | str],
+        visibility: Visibility | str,
+    ) -> BulkVisibilityResult:
+        """Change visibility for multiple assets in a single call.
+
+        POST /v1/manage/assets/bulk-visibility
+        """
+        payload = {
+            "assetIds": [str(a) for a in asset_ids],
+            "visibility": str(visibility),
+        }
+        resp = self._http.post(f"{self.MANAGE_BASE}/bulk-visibility", json=payload)
+        raise_for_status(resp)
+        data = resp.json()
+        return BulkVisibilityResult(
+            items=data["items"], updated=data["updated"], failed=data["failed"]
+        )
 
     # ── Delivery endpoints (public / client-facing) ────────────────────
 

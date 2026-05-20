@@ -1,5 +1,6 @@
 from saas_media_library.client import MediaLibraryClient
 from saas_media_library.asset_access import AssetAccessAPI
+from saas_media_library.assets import BulkVisibilityResult
 from saas_media_library.models import (
     AssetKind,
     AssetStatus,
@@ -26,6 +27,7 @@ from saas_media_library.exceptions import (
 __all__ = [
     "MediaLibraryClient",
     "AssetAccessAPI",
+    "BulkVisibilityResult",
     "AssetKind",
     "AssetStatus",
     "Visibility",
