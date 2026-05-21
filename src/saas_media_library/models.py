@@ -141,6 +141,32 @@ class Asset(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class DeliveryRenditionVariant(BaseModel):
+    name: str
+    width: Optional[int] = None
+    height: Optional[int] = None
+    bitrate_kbps: Optional[int] = Field(None, alias="bitrateKbps")
+    preview_url: Optional[str] = Field(None, alias="previewUrl")
+    preview_url_type: Optional[str] = Field(None, alias="previewUrlType")
+    preview_url_expires_in: Optional[int] = Field(None, alias="previewUrlExpiresIn")
+
+    model_config = {"populate_by_name": True}
+
+
+class DeliveryRendition(BaseModel):
+    id: UUID
+    rendition_type: str = Field(alias="renditionType")
+    status: str
+    entrypoint: str
+    duration_seconds: Optional[float] = Field(None, alias="durationSeconds")
+    variants: List[DeliveryRenditionVariant] = Field(default_factory=list)
+    preview_url: Optional[str] = Field(None, alias="previewUrl")
+    preview_url_type: Optional[str] = Field(None, alias="previewUrlType")
+    preview_url_expires_in: Optional[int] = Field(None, alias="previewUrlExpiresIn")
+
+    model_config = {"populate_by_name": True}
+
+
 class DeliveryAsset(BaseModel):
     id: UUID
     kind: AssetKind
@@ -151,6 +177,7 @@ class DeliveryAsset(BaseModel):
     download_type: str = Field(alias="downloadType")
     download_url: Optional[str] = Field(None, alias="downloadUrl")
     download_url_expires_in: Optional[int] = Field(None, alias="downloadUrlExpiresIn")
+    renditions: List[DeliveryRendition] = Field(default_factory=list)
 
     model_config = {"populate_by_name": True}
 
