@@ -296,22 +296,32 @@ class ResourcePoliciesAPI:
         self,
         policies: List[Dict[str, Any]],
         *,
-        delete_stale: bool = True,
+        delete_stale: bool = False,
         hard_delete: bool = False,
     ) -> List[ResourcePolicy]:
-        """Declarative sync: ensure the tenant has exactly these policies.
+        """Declarative sync: ensure the tenant has (at least) these policies.
 
         Compares the desired ``policies`` list against the existing policies
         by their ``(resource_type, collection_name)`` composite key:
 
         - **Match** → upsert (update) the existing policy
         - **New** → create the policy
-        - **Stale** (exists remotely but not in the list) → delete
+        - **Stale** (exists remotely but not in the list) → only deleted when
+          ``delete_stale=True`` is explicitly passed.
+
+        IMPORTANT: ``delete_stale`` defaults to ``False``. Many services share a
+        single media-library tenant, each syncing only its own resource types.
+        If stale pruning were on by default, every service would deactivate the
+        other services' policies as "stale" on each startup, fighting each other
+        (last writer wins). Deactivation must therefore be an explicit, deliberate
+        action — either ``delete_stale=True`` here, or an admin calling
+        ``deactivate()`` / ``delete()`` directly. Do NOT enable ``delete_stale``
+        on a shared tenant.
 
         Args:
             policies: List of dicts, each passed as kwargs to ``upsert()``.
-            delete_stale: If True (default), policies that exist on the server
-                but are not in the list will be deleted.
+            delete_stale: If True, policies that exist on the server but are not
+                in the list will be deleted. Defaults to False (no auto-deletion).
             hard_delete: If True, stale policies are hard-deleted (permanent).
                 If False (default), they are soft-deleted (deactivated).
 
