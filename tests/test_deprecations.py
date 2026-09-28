@@ -165,7 +165,11 @@ def test_get_schema_points_at_processing(server) -> None:
     # Still the legacy policy schema: the new one has a different shape.
     assert schema == {"defaults": {}}
     [warning] = _deprecations(record)
-    assert "client.processing.get_schema()" in str(warning.message)
+    message = str(warning.message)
+    assert "client.processing.get_schema()" in message
+    assert "different shape" in message
+    assert "mime_types_by_kind -> mimeTypesByKind" in message
+    assert "configurable_steps -> configurableSteps" in message
     assert warning.filename == __file__
 
 

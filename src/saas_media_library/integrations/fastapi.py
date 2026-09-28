@@ -54,8 +54,13 @@ def create_media_router(
 
     ``get_current_user`` is the app's FastAPI dependency; whatever it returns
     is passed to ``gate``'s ``can_access``. Failures talking to the media
-    library answer 502, so an expired service token is not mistaken for the
-    user's own 401. Endpoints are sync and run in FastAPI's threadpool.
+    library (error responses, connection errors, timeouts, malformed
+    responses) answer 502 with a generic detail, so an expired service token
+    is not mistaken for the user's own 401. The gate raises all of them as
+    ``MediaLibraryError``; exceptions from ``can_access`` or
+    ``get_current_user`` are not caught here (500, or the app's own
+    handlers), whatever their type. Endpoints are sync and run in FastAPI's
+    threadpool.
 
     Usage::
 
@@ -101,5 +106,5 @@ def _media_library_errors() -> Iterator[None]:
     try:
         yield
     except MediaLibraryError as exc:
-        logger.warning("Media library request failed: %s", exc)
+        logger.warning("Media library request failed: %s: %s", type(exc).__name__, exc)
         raise HTTPException(status_code=502, detail="Media library request failed") from exc

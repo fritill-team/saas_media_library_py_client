@@ -2,7 +2,13 @@
 
 Delivery links are bound to the file, not to the user who asked for it
 (docs/asset-access/retirement.md), so one cached entry serves every user the
-app lets open the asset.
+app lets open the asset. They are bound to the tenant, though: entries are
+kept per tenant.
+
+Entries are not kept per principal, and a hit makes no request, so the media
+library never checks who reads it. Fill and read a cache only through clients
+using a tenant's service token; a user-token client reading it would get the
+service token's results, RESTRICTED links included.
 """
 
 from __future__ import annotations
@@ -11,14 +17,18 @@ import math
 import threading
 import time
 from collections import OrderedDict
-from typing import Callable, Dict, Iterable, List, NamedTuple, Optional
+from typing import Callable, Dict, Iterable, List, NamedTuple, Optional, Set, Tuple
 from uuid import UUID
 
 from saas_media_library.models import (
+    AssetStatus,
     DeliveryAsset,
     DeliveryBatchResolveResult,
     ResolveStatus,
 )
+
+# (tenant id, asset id)
+_Key = Tuple[Optional[str], UUID]
 
 
 class _Entry(NamedTuple):
@@ -28,7 +38,8 @@ class _Entry(NamedTuple):
 
 
 class AssetUrlCache:
-    """Thread-safe cache of ``ok`` delivery resolve results, keyed by asset id.
+    """Thread-safe cache of ``ok`` delivery resolve results, keyed by tenant
+    and asset id.
 
     An entry lives until its shortest link expires, minus ``safety_margin``
     seconds (request latency, clock skew, and time for the browser to start
@@ -37,8 +48,19 @@ class AssetUrlCache:
     ``default_ttl`` seconds. A result whose links expire within the margin is
     not cached.
 
-    Only ``ok`` results are cached: ``not_found``, ``forbidden`` and ``error``
-    are always asked again.
+    Only ``ok`` results for ``ready`` assets are cached: ``not_found``,
+    ``forbidden`` and ``error``, and assets still being processed (whose
+    renditions are not there yet), are always asked again.
+
+    ``tenant_id`` scopes every lookup and update: a result stored for one
+    tenant is never returned for another, since the media library resolves
+    ids per tenant. ``AccessGate`` and ``client.delivery.resolve(ids,
+    cache=...)`` pass their client's tenant, so one cache can be shared by
+    clients of several tenants, as long as every one of them uses its
+    tenant's service token (entries are not kept per principal). Calls
+    without ``tenant_id`` use a namespace of
+    their own, except ``invalidate``, which then drops the asset for every
+    tenant.
 
     ``get`` returns the result with every ``*ExpiresIn`` value reduced by the
     entry's age, so callers (and their frontends) see how long the links
@@ -46,11 +68,17 @@ class AssetUrlCache:
     between callers.
 
     ``max_entries`` bounds the cache; the least recently used entry is evicted
-    first. ``clock`` (seconds, monotonic) is injectable for tests.
+    first. Expired entries are also dropped as new ones are stored, so an
+    unbounded cache grows with the live entries only. ``clock`` (seconds,
+    monotonic) is injectable for tests.
     """
 
     DEFAULT_SAFETY_MARGIN = 30.0
     DEFAULT_TTL = 300.0
+    # Expired entries are swept when the cache has grown to twice its size
+    # after the previous sweep (at least this many entries): amortized O(1)
+    # per stored entry.
+    _MIN_SWEEP_SIZE = 64
 
     def __init__(
         self,
@@ -70,29 +98,44 @@ class AssetUrlCache:
         self.default_ttl = default_ttl
         self.max_entries = max_entries
         self._clock = clock
-        self._entries: OrderedDict[UUID, _Entry] = OrderedDict()
+        self._entries: OrderedDict[_Key, _Entry] = OrderedDict()
+        # asset id -> tenants with an entry for it, for ``invalidate``.
+        self._tenants_by_asset: Dict[UUID, Set[Optional[str]]] = {}
+        self._sweep_at = self._MIN_SWEEP_SIZE
         self._lock = threading.Lock()
 
     # ── Lookups ────────────────────────────────────────────────────────
 
-    def get(self, asset_id: UUID | str) -> Optional[DeliveryBatchResolveResult]:
+    def get(
+        self,
+        asset_id: UUID | str,
+        *,
+        tenant_id: Optional[str] = None,
+    ) -> Optional[DeliveryBatchResolveResult]:
         """The cached result for ``asset_id``, or None if missing or expired."""
-        return self.get_many([asset_id]).get(_as_uuid(asset_id))
+        return self.get_many([asset_id], tenant_id=tenant_id).get(_as_uuid(asset_id))
 
-    def get_many(self, asset_ids: Iterable[UUID | str]) -> Dict[UUID, DeliveryBatchResolveResult]:
+    def get_many(
+        self,
+        asset_ids: Iterable[UUID | str],
+        *,
+        tenant_id: Optional[str] = None,
+    ) -> Dict[UUID, DeliveryBatchResolveResult]:
         """Cached results for the ids that have a live entry (misses are left out)."""
+        tenant = _tenant(tenant_id)
         ids = [_as_uuid(a) for a in asset_ids]
         found: Dict[UUID, _Entry] = {}
         with self._lock:
             now = self._clock()
             for asset_id in ids:
-                entry = self._entries.get(asset_id)
+                key = (tenant, asset_id)
+                entry = self._entries.get(key)
                 if entry is None:
                     continue
                 if entry.expires_at <= now:
-                    del self._entries[asset_id]
+                    self._drop(key)
                     continue
-                self._entries.move_to_end(asset_id)
+                self._entries.move_to_end(key)
                 found[asset_id] = entry
         return {
             asset_id: _with_remaining_expiry(entry.result, now - entry.stored_at)
@@ -101,33 +144,50 @@ class AssetUrlCache:
 
     # ── Updates ────────────────────────────────────────────────────────
 
-    def put(self, result: DeliveryBatchResolveResult) -> bool:
+    def put(
+        self,
+        result: DeliveryBatchResolveResult,
+        *,
+        tenant_id: Optional[str] = None,
+    ) -> bool:
         """Cache one result; returns whether it was cached.
 
-        A result that cannot be cached (not ``ok``, or links about to expire)
-        drops any older entry for the same asset instead.
+        A result that cannot be cached (not ``ok``, asset not ``ready``, or
+        links about to expire) drops any older entry for the same asset
+        instead.
         """
-        return self._put_all([result])[0]
+        return self._put_all([result], tenant_id)[0]
 
-    def put_many(self, results: Iterable[DeliveryBatchResolveResult]) -> None:
+    def put_many(
+        self,
+        results: Iterable[DeliveryBatchResolveResult],
+        *,
+        tenant_id: Optional[str] = None,
+    ) -> None:
         """Cache each result, as ``put``."""
-        self._put_all(results)
+        self._put_all(results, tenant_id)
 
-    def invalidate(self, asset_id: UUID | str) -> None:
-        """Drop the entry for ``asset_id`` (e.g. after changing its visibility)."""
+    def invalidate(self, asset_id: UUID | str, *, tenant_id: Optional[str] = None) -> None:
+        """Drop the entries for ``asset_id`` (e.g. after changing its
+        visibility): only ``tenant_id``'s when given, else every tenant's."""
+        asset_id = _as_uuid(asset_id)
         with self._lock:
-            self._entries.pop(_as_uuid(asset_id), None)
+            if tenant_id is not None:
+                self._drop((_tenant(tenant_id), asset_id))
+                return
+            for tenant in list(self._tenants_by_asset.get(asset_id, ())):
+                self._drop((tenant, asset_id))
 
     def clear(self) -> None:
         with self._lock:
             self._entries.clear()
+            self._tenants_by_asset.clear()
+            self._sweep_at = self._MIN_SWEEP_SIZE
 
     def __len__(self) -> int:
-        """Number of live entries (expired ones are dropped first)."""
+        """Number of live entries, over all tenants (expired ones are dropped first)."""
         with self._lock:
-            now = self._clock()
-            for asset_id in [a for a, e in self._entries.items() if e.expires_at <= now]:
-                del self._entries[asset_id]
+            self._drop_expired(self._clock())
             return len(self._entries)
 
     # ── TTL ────────────────────────────────────────────────────────────
@@ -135,6 +195,9 @@ class AssetUrlCache:
     def ttl_for(self, result: DeliveryBatchResolveResult) -> Optional[float]:
         """Seconds ``result`` may be cached, or None if it must not be."""
         if result.status != ResolveStatus.OK or result.asset is None:
+            return None
+        if result.asset.status != AssetStatus.READY:
+            # Still processing (or failed): renditions may appear at any time.
             return None
         expiries = _link_expiries(result.asset)
         if not expiries:
@@ -144,27 +207,56 @@ class AssetUrlCache:
 
     # ── Private helpers ────────────────────────────────────────────────
 
-    def _put_all(self, results: Iterable[DeliveryBatchResolveResult]) -> List[bool]:
-        prepared = [(r.asset_id, r, self.ttl_for(r)) for r in results]
+    def _put_all(
+        self,
+        results: Iterable[DeliveryBatchResolveResult],
+        tenant_id: Optional[str],
+    ) -> List[bool]:
+        tenant = _tenant(tenant_id)
+        prepared = [((tenant, r.asset_id), r, self.ttl_for(r)) for r in results]
         cached: List[bool] = []
         with self._lock:
             now = self._clock()
-            for asset_id, result, ttl in prepared:
+            for key, result, ttl in prepared:
                 if ttl is None:
-                    self._entries.pop(asset_id, None)
+                    self._drop(key)
                     cached.append(False)
                     continue
-                self._entries[asset_id] = _Entry(result, now, now + ttl)
-                self._entries.move_to_end(asset_id)
+                self._entries[key] = _Entry(result, now, now + ttl)
+                self._entries.move_to_end(key)
+                self._tenants_by_asset.setdefault(key[1], set()).add(key[0])
                 cached.append(True)
+            if len(self._entries) >= self._sweep_at:
+                self._drop_expired(now)
+                self._sweep_at = max(2 * len(self._entries), self._MIN_SWEEP_SIZE)
             if self.max_entries is not None:
                 while len(self._entries) > self.max_entries:
-                    self._entries.popitem(last=False)
+                    self._drop(next(iter(self._entries)))
         return cached
+
+    def _drop(self, key: _Key) -> None:
+        """Remove one entry (lock held)."""
+        if self._entries.pop(key, None) is None:
+            return
+        tenant, asset_id = key
+        tenants = self._tenants_by_asset.get(asset_id)
+        if tenants is not None:
+            tenants.discard(tenant)
+            if not tenants:
+                del self._tenants_by_asset[asset_id]
+
+    def _drop_expired(self, now: float) -> None:
+        """Remove every expired entry (lock held)."""
+        for key in [k for k, e in self._entries.items() if e.expires_at <= now]:
+            self._drop(key)
 
 
 def _as_uuid(value: UUID | str) -> UUID:
     return value if isinstance(value, UUID) else UUID(str(value))
+
+
+def _tenant(tenant_id: Optional[str]) -> Optional[str]:
+    return None if tenant_id is None else str(tenant_id)
 
 
 def _link_expiries(asset: DeliveryAsset) -> List[int]:

@@ -9,11 +9,18 @@ bytes.
 
 from __future__ import annotations
 
+import json
 import logging
-from typing import Any, Callable, Dict, Iterable, List, Optional, Set
+from collections.abc import Mapping
+from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Union
 from uuid import UUID
 
+import httpx
+import pydantic
+
 from saas_media_library.cache import AssetUrlCache, _as_uuid
+from saas_media_library.delivery import _NO_RESULT_ERROR, thumbnail_url
+from saas_media_library.exceptions import MediaLibraryError
 from saas_media_library.models import (
     DeliveryBatchResolveResult,
     ResolveStatus,
@@ -21,9 +28,14 @@ from saas_media_library.models import (
 
 logger = logging.getLogger(__name__)
 
-CanAccess = Callable[[Any, List[UUID]], Iterable[UUID | str]]
+# Transport errors (unreachable, timeouts) and bodies that are not the
+# expected JSON, raised by the service client's resolve.
+_TRANSPORT_OR_DECODE_ERRORS = (httpx.HTTPError, pydantic.ValidationError, json.JSONDecodeError)
 
-_THUMBNAIL_RENDITION_TYPE = "thumbnail"
+CanAccess = Callable[
+    [Any, List[UUID]],
+    Union[Iterable[UUID | str], Mapping[UUID | str, Any]],
+]
 
 
 class AccessGate:
@@ -31,7 +43,8 @@ class AccessGate:
 
     ``can_access(user, asset_ids)`` gets every requested id at once and
     returns the ones ``user`` may open, so the app can answer with a single
-    query (enrollments, purchases, roles...)::
+    query (enrollments, purchases, roles...). It may also return a mapping
+    ``{asset_id: allowed}``; only ids with a truthy value are allowed::
 
         def can_access(user, asset_ids):
             return db.scalars(
@@ -49,8 +62,9 @@ class AccessGate:
     warning is logged), and grant-based access is going away.
 
     Every id is resolved with the service token (through ``cache``, when
-    given), including the ones the app denies, which only get the asset's
-    public thumbnail. Results come back one per requested id, in order:
+    given, scoped to the client's tenant), including the ones the app
+    denies, which only get the asset's public thumbnail (``thumbnail_url``).
+    Results come back one per requested id, in order:
 
     - allowed: the media library's result (``ok``, ``not_found``, ``error``).
     - denied: ``forbidden`` with ``asset=None`` and at most a
@@ -60,6 +74,12 @@ class AccessGate:
     ``to_payload`` turns the results into the exact JSON of
     ``POST /delivery/assets/resolve``, so a frontend only changes its base
     URL. The gate is thread-safe when ``can_access`` is.
+
+    Every failure of the media library call raises ``MediaLibraryError``:
+    error responses as their usual subclass, transport errors and malformed
+    responses as ``MediaLibraryError`` with the original as ``__cause__``.
+    Exceptions raised by ``can_access`` propagate unchanged, whatever their
+    type, so callers can tell the two apart.
     """
 
     DENIED_ERROR = "Access denied"
@@ -104,7 +124,7 @@ class AccessGate:
                         asset_id=asset_id, status=ResolveStatus.NOT_FOUND
                     )
                 else:
-                    by_id[asset_id] = _forbidden(asset_id, _thumbnail_url(item), self.DENIED_ERROR)
+                    by_id[asset_id] = _forbidden(asset_id, thumbnail_url(item), self.DENIED_ERROR)
             elif item.status == ResolveStatus.FORBIDDEN:
                 logger.warning(
                     "Media library denied asset %s to the gate's client; "
@@ -139,22 +159,29 @@ class AccessGate:
                 "can_access must return an iterable of allowed asset ids, "
                 f"got {type(allowed).__name__}"
             )
+        if isinstance(allowed, Mapping):
+            # {id: allowed}: iterating would yield every key, allowed or not.
+            return {_as_uuid(a) for a, ok in allowed.items() if ok}
         return {_as_uuid(a) for a in allowed}
 
     def _resolve_with_service(self, asset_ids: List[UUID]) -> Dict[UUID, DeliveryBatchResolveResult]:
-        found = self.cache.get_many(asset_ids) if self.cache is not None else {}
-        missing = [a for a in asset_ids if a not in found]
-        if missing:
-            fresh = self._client.delivery.resolve(missing)
+        try:
             if self.cache is not None:
-                self.cache.put_many(fresh)
-            found.update((item.asset_id, item) for item in fresh)
+                # Cache entries are scoped to the client's tenant.
+                fresh = self._client.delivery.resolve(asset_ids, cache=self.cache)
+            else:
+                fresh = self._client.delivery.resolve(asset_ids)
+        except _TRANSPORT_OR_DECODE_ERRORS as exc:
+            raise MediaLibraryError(
+                f"Media library resolve failed: {type(exc).__name__}: {exc}"
+            ) from exc
+        found = {item.asset_id: item for item in fresh}
         for asset_id in asset_ids:
             if asset_id not in found:
                 found[asset_id] = DeliveryBatchResolveResult(
                     asset_id=asset_id,
                     status=ResolveStatus.ERROR,
-                    error="The media library returned no result for this asset",
+                    error=_NO_RESULT_ERROR,
                 )
         return found
 
@@ -171,16 +198,3 @@ def _forbidden(
         asset=None,
         error=error,
     )
-
-
-def _thumbnail_url(item: DeliveryBatchResolveResult) -> Optional[str]:
-    """The asset's public thumbnail: its thumbnail rendition's preview link.
-
-    Falls back to the item's ``thumbnail_url``, which the server also takes
-    from the thumbnail rendition.
-    """
-    if item.asset is not None:
-        for rendition in item.asset.renditions:
-            if rendition.rendition_type == _THUMBNAIL_RENDITION_TYPE and rendition.preview_url:
-                return rendition.preview_url
-    return item.thumbnail_url

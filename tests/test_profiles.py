@@ -106,6 +106,29 @@ def test_mime_types_are_normalized() -> None:
     assert profile.allowed_mime_types == {"image/png"}
 
 
+def test_allowed_mime_type_parameters_are_dropped() -> None:
+    profile = _profile(allowed_mime_types={"Text/Plain; charset=UTF-8", "image/svg+xml"})
+    assert profile.allowed_mime_types == {"text/plain", "image/svg+xml"}
+
+
+@pytest.mark.parametrize(
+    "bad",
+    ["png", "", " ", "image/", "/png", "image/png/x", "image / png", "image/p ng", "image/png,image/gif"],
+)
+def test_allowed_mime_types_must_be_type_subtype(bad) -> None:
+    with pytest.raises(pydantic.ValidationError, match="not a MIME type"):
+        _profile(allowed_mime_types={"image/png", bad})
+
+
+def test_partial_wildcard_is_accepted_but_only_matches_itself() -> None:
+    # As in the server's policies: "*/*" is the only wildcard.
+    profile = _profile(allowed_mime_types={"Video/*"})
+
+    assert profile.allowed_mime_types == {"video/*"}
+    with pytest.raises(UploadRejected):
+        profile.validate_file("video/mp4", 50)
+
+
 # ── validate_file ─────────────────────────────────────────────────────
 
 
@@ -125,6 +148,27 @@ def test_validate_file_rejects_mime_type() -> None:
 
 def test_validate_file_mime_type_is_case_insensitive() -> None:
     _profile().validate_file("IMAGE/PNG", 50)
+
+
+@pytest.mark.parametrize("mime_type", [" image/png ", "Image/PNG; charset=binary", "image/png;q=1"])
+def test_validate_file_ignores_parameters_and_whitespace(mime_type) -> None:
+    _profile().validate_file(mime_type, 50)
+
+
+@pytest.mark.parametrize("allowed", [None, {"*/*"}, {"image/png"}])
+@pytest.mark.parametrize("mime_type", ["png", "", "image/", "*/*", "image/*", "image/png/x", "image /png"])
+def test_validate_file_rejects_malformed_mime_type(allowed, mime_type) -> None:
+    # Whatever the profile allows: a file's type must be a concrete type/subtype.
+    with pytest.raises(UploadRejected) as excinfo:
+        _profile(allowed_mime_types=allowed).validate_file(mime_type, 50)
+
+    assert excinfo.value.reason == UploadRejected.MIME_TYPE
+
+
+def test_verify_asset_normalizes_the_stored_mime_type() -> None:
+    _profile().verify_asset(_asset(mimeType="Image/PNG"))
+    with pytest.raises(UploadRejected):
+        _profile().verify_asset(_asset(mimeType="png"))
 
 
 @pytest.mark.parametrize("allowed", [None, {"*/*"}, {"*/*", "image/png"}])

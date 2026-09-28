@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
+import threading
 from typing import List
 from uuid import uuid4
 
@@ -445,6 +447,57 @@ def test_upload_file_from_seekable_stream_starts_at_current_position(tmp_path) -
     assert b"".join(p.content for p in server.parts) == b"payload!!"
 
 
+@respx.mock
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs FIFOs")
+def test_upload_file_from_fifo_path_reads_the_stream(tmp_path) -> None:
+    # A FIFO reports st_size 0: its size must come from reading it.
+    server = _UploadServer(respx.mock, part_size=2048)
+    fifo = tmp_path / "export.bin"
+    os.mkfifo(fifo)
+    data = bytes(range(256)) * 20
+    writer = threading.Thread(target=fifo.write_bytes, args=(data,), daemon=True)
+    writer.start()
+
+    with _make_client() as client:
+        client.uploads.upload_file(fifo, profile=UploadProfile(kind=AssetKind.OTHER))
+    writer.join(timeout=5)
+
+    assert server.create_body["expected_size_bytes"] == len(data)
+    assert server.create_body["original_filename"] == "export.bin"
+    assert [len(p.content) for p in server.parts] == [2048, 2048, 1024]
+    assert b"".join(p.content for p in server.parts) == data
+    assert server.finalize_params == {"expected_sha256_hex": _sha(data)}
+
+
+@respx.mock
+@pytest.mark.skipif(not os.path.isfile("/proc/self/status"), reason="needs procfs")
+def test_upload_file_from_procfs_path_is_not_empty() -> None:
+    # /proc files are "regular" but report st_size 0.
+    server = _UploadServer(respx.mock, part_size=1 << 20)
+
+    with _make_client() as client:
+        client.uploads.upload_file("/proc/self/status", profile=UploadProfile(kind=AssetKind.OTHER),
+                                   mime_type="text/plain")
+
+    sent = b"".join(p.content for p in server.parts)
+    assert server.create_body["expected_size_bytes"] == len(sent) > 0
+    assert server.finalize_params == {"expected_sha256_hex": _sha(sent)}
+
+
+@respx.mock
+def test_upload_file_from_empty_regular_file(tmp_path) -> None:
+    server = _UploadServer(respx.mock)
+    path = tmp_path / "empty.txt"
+    path.write_bytes(b"")
+
+    with _make_client() as client:
+        client.uploads.upload_file(path, profile=UploadProfile(kind=AssetKind.OTHER))
+
+    assert server.create_body["expected_size_bytes"] == 0
+    assert server.parts == []
+    assert server.finalize_params == {"expected_sha256_hex": _sha(b"")}
+
+
 class _NonSeekable(io.RawIOBase):
     """A pipe-like stream: no seek, short reads."""
 
@@ -648,3 +701,60 @@ def test_upload_file_finalize_failure_with_unknown_state_does_not_abort() -> Non
         client.uploads.upload_file(b"abcdef", profile=IMAGE_PROFILE, mime_type="image/png")
 
     assert not server.abort.called
+
+
+# ── MIME type normalization ───────────────────────────────────────────
+
+
+@respx.mock
+def test_create_session_sends_the_normalized_mime_type() -> None:
+    server = _UploadServer(respx.mock)
+
+    with _make_client() as client:
+        client.uploads.create_session(mime_type=" Image/PNG; charset=binary", profile=IMAGE_PROFILE,
+                                      expected_size_bytes=10)
+
+    assert server.create_body["mime_type"] == "image/png"
+
+
+@respx.mock
+def test_create_session_without_profile_sends_the_normalized_mime_type() -> None:
+    server = _UploadServer(respx.mock)
+
+    with _make_client() as client:
+        client.uploads.create_session(mime_type="Video/MP4", kind="video")
+
+    assert server.create_body["mime_type"] == "video/mp4"
+
+
+@respx.mock
+@pytest.mark.parametrize("validate", [True, False])
+def test_create_session_rejects_malformed_mime_type_before_any_request(validate) -> None:
+    server = _UploadServer(respx.mock)
+
+    with _make_client() as client, pytest.raises(UploadRejected) as excinfo:
+        client.uploads.create_session(mime_type="png", profile=IMAGE_PROFILE,
+                                      expected_size_bytes=10, validate=validate)
+
+    assert excinfo.value.reason == UploadRejected.MIME_TYPE
+    assert not server.create.called
+
+
+@respx.mock
+def test_create_session_without_profile_rejects_malformed_mime_type() -> None:
+    server = _UploadServer(respx.mock)
+
+    with _make_client() as client, pytest.raises(UploadRejected):
+        client.uploads.create_session(mime_type="", kind="other")
+
+    assert not server.create.called
+
+
+@respx.mock
+def test_upload_file_sends_the_normalized_mime_type() -> None:
+    server = _UploadServer(respx.mock)
+
+    with _make_client() as client:
+        client.uploads.upload_file(b"abcdef", profile=IMAGE_PROFILE, mime_type=" IMAGE/JPEG ")
+
+    assert server.create_body["mime_type"] == "image/jpeg"

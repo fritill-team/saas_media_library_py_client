@@ -26,6 +26,7 @@ def _ok(
     download_expires: Optional[int] = 3600,
     rendition_expires: Optional[int] = None,
     variant_expires: List[Optional[int]] = (),
+    asset_status: str = "ready",
 ) -> DeliveryBatchResolveResult:
     asset_id = asset_id or uuid4()
     renditions = []
@@ -51,7 +52,7 @@ def _ok(
         "asset": {
             "id": str(asset_id),
             "kind": "video",
-            "status": "ready",
+            "status": asset_status,
             "visibility": "restricted",
             "mimeType": "video/mp4",
             "downloadType": "volume_token",
@@ -161,6 +162,29 @@ def test_ok_without_asset_is_not_cached() -> None:
     result = DeliveryBatchResolveResult.model_validate({"assetId": str(uuid4()), "status": "ok"})
 
     assert cache.put(result) is False
+
+
+@pytest.mark.parametrize(
+    "asset_status", ["pending", "uploaded", "processing", "awaiting_input", "failed"]
+)
+def test_assets_that_are_not_ready_are_not_cached(asset_status) -> None:
+    # Renditions (HLS, thumbnails...) may still appear: always ask again.
+    cache = _cache(FakeClock())
+    result = _ok(asset_status=asset_status)
+
+    assert cache.ttl_for(result) is None
+    assert cache.put(result) is False
+    assert cache.get(result.asset_id) is None
+
+
+def test_not_ready_result_drops_older_entry() -> None:
+    cache = _cache(FakeClock())
+    asset_id = uuid4()
+    cache.put(_ok(asset_id))
+
+    cache.put(_ok(asset_id, asset_status="processing"))
+
+    assert cache.get(asset_id) is None
 
 
 def test_uncacheable_result_drops_older_entry() -> None:
@@ -288,6 +312,104 @@ def test_len_drops_expired_entries() -> None:
 
     clock.advance(80)
 
+    assert len(cache) == 1
+
+
+def test_expired_entries_are_purged_as_new_ones_are_stored() -> None:
+    # Without max_entries, ids that are never looked up again must not pile up.
+    clock = FakeClock()
+    cache = _cache(clock)
+    for _ in range(20):
+        cache.put_many([_ok(download_expires=100) for _ in range(50)])
+        clock.advance(100)
+    for _ in range(50):
+        cache.put(_ok(download_expires=100))
+
+    # Internal: only the live entries plus at most one sweep interval remain.
+    assert len(cache._entries) <= 2 * max(50, AssetUrlCache._MIN_SWEEP_SIZE)
+    assert set(cache._tenants_by_asset) == {asset_id for _, asset_id in cache._entries}
+    assert len(cache) == 50
+
+
+def test_purge_keeps_live_entries() -> None:
+    clock = FakeClock()
+    cache = _cache(clock)
+    live = _ok(download_expires=10_000)
+    cache.put(live, tenant_id="t1")
+    cache.put_many([_ok(download_expires=100) for _ in range(200)])
+    clock.advance(100)
+
+    cache.put_many([_ok(download_expires=100) for _ in range(250)])  # triggers a sweep
+
+    assert len(cache._entries) == 251  # internal: the 200 expired entries are gone
+    assert cache.get(live.asset_id, tenant_id="t1") is not None
+
+
+# ── Tenants ────────────────────────────────────────────────────────────
+
+
+def test_entries_are_scoped_by_tenant() -> None:
+    cache = _cache(FakeClock())
+    result = _ok()
+
+    assert cache.put(result, tenant_id="tenant-b")
+
+    assert cache.get(result.asset_id, tenant_id="tenant-b") == result
+    assert cache.get(result.asset_id, tenant_id="tenant-a") is None
+    assert cache.get(result.asset_id) is None
+    assert cache.get_many([result.asset_id], tenant_id="tenant-a") == {}
+
+
+def test_same_asset_id_is_kept_per_tenant() -> None:
+    cache = _cache(FakeClock())
+    asset_id = uuid4()
+    a, b = _ok(asset_id, download_expires=1000), _ok(asset_id, download_expires=2000)
+
+    cache.put(a, tenant_id="tenant-a")
+    cache.put(b, tenant_id="tenant-b")
+
+    assert cache.get(asset_id, tenant_id="tenant-a") == a
+    assert cache.get(asset_id, tenant_id="tenant-b") == b
+    assert len(cache) == 2
+
+
+def test_invalidate_without_tenant_drops_every_tenants_entry() -> None:
+    cache = _cache(FakeClock())
+    asset_id, other = uuid4(), _ok()
+    for tenant in ("tenant-a", "tenant-b", None):
+        cache.put(_ok(asset_id), tenant_id=tenant)
+    cache.put(other, tenant_id="tenant-a")
+
+    cache.invalidate(str(asset_id))
+
+    for tenant in ("tenant-a", "tenant-b", None):
+        assert cache.get(asset_id, tenant_id=tenant) is None
+    assert cache.get(other.asset_id, tenant_id="tenant-a") is not None
+    assert len(cache) == 1
+
+
+def test_invalidate_with_tenant_drops_only_that_tenants_entry() -> None:
+    cache = _cache(FakeClock())
+    asset_id = uuid4()
+    cache.put(_ok(asset_id), tenant_id="tenant-a")
+    cache.put(_ok(asset_id), tenant_id="tenant-b")
+
+    cache.invalidate(asset_id, tenant_id="tenant-a")
+
+    assert cache.get(asset_id, tenant_id="tenant-a") is None
+    assert cache.get(asset_id, tenant_id="tenant-b") is not None
+
+
+def test_lru_eviction_counts_entries_of_every_tenant() -> None:
+    cache = _cache(FakeClock(), max_entries=2)
+    asset_id = uuid4()
+    cache.put(_ok(asset_id), tenant_id="tenant-a")
+    cache.put(_ok(asset_id), tenant_id="tenant-b")
+    cache.put(_ok(), tenant_id="tenant-a")
+
+    assert cache.get(asset_id, tenant_id="tenant-a") is None
+    assert cache.get(asset_id, tenant_id="tenant-b") is not None
+    cache.invalidate(asset_id)
     assert len(cache) == 1
 
 

@@ -15,6 +15,7 @@ from saas_media_library import (
     ResourcePolicy,
     UploadProfile,
     Visibility,
+    find_profile,
     policy_key,
     profiles_from_policies,
     render_profiles_module,
@@ -181,6 +182,60 @@ def test_duplicate_keys_are_rejected() -> None:
 
 def test_no_policies() -> None:
     assert profiles_from_policies([]) == {}
+
+
+def test_policy_with_malformed_mime_type_names_the_policy() -> None:
+    policy = _policy("courses", "cover", allowedMimeTypes=["image/png", "png"])
+
+    with pytest.raises(ValueError, match=r"(?s)'courses/cover'.*'png' is not a MIME type"):
+        profiles_from_policies([policy])
+
+
+def test_policy_mime_types_are_normalized() -> None:
+    policy = _policy("courses", "cover", allowedMimeTypes=["Image/PNG", "*/*", "video/*"])
+
+    profile = profiles_from_policies([policy])["courses/cover"]
+
+    assert profile.allowed_mime_types == {"image/png", "*/*", "video/*"}
+
+
+# ── find_profile ───────────────────────────────────────────────────────
+
+
+def _profiles_for_lookup() -> dict:
+    return profiles_from_policies([_policy("courses"), _policy("courses", "cover"), _policy("avatars", "big")])
+
+
+def test_find_profile_exact_match_wins() -> None:
+    profiles = _profiles_for_lookup()
+
+    assert find_profile(profiles, "courses", "cover") is profiles["courses/cover"]
+
+
+def test_find_profile_falls_back_to_the_resource_type_default() -> None:
+    # The server served ("courses", "banner") with the default "courses"
+    # policy; the profile lookup must too.
+    profiles = _profiles_for_lookup()
+
+    assert find_profile(profiles, "courses", "banner") is profiles["courses"]
+    assert find_profile(profiles, "courses") is profiles["courses"]
+    assert find_profile(profiles, "courses", None) is profiles["courses"]
+
+
+def test_find_profile_without_a_match_is_none() -> None:
+    profiles = _profiles_for_lookup()
+
+    # No default for "avatars", and never another collection's profile.
+    assert find_profile(profiles, "avatars", "small") is None
+    assert find_profile(profiles, "avatars") is None
+    assert find_profile(profiles, "videos", "cover") is None
+    assert find_profile({}, "courses", "cover") is None
+
+
+def test_find_profile_works_on_a_generated_module() -> None:
+    loaded = _load(render_profiles_module(_profiles_for_lookup()))
+
+    assert find_profile(loaded, "courses", "banner") == loaded["courses"]
 
 
 # ── render_profiles_module ─────────────────────────────────────────────

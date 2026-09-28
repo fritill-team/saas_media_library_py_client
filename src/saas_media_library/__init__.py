@@ -2,9 +2,10 @@ from saas_media_library.client import MediaLibraryClient
 from saas_media_library.asset_access import AssetAccessAPI
 from saas_media_library.assets import BulkVisibilityResult
 from saas_media_library.cache import AssetUrlCache
-from saas_media_library.delivery import DeliveryAPI
+from saas_media_library.delivery import DeliveryAPI, thumbnail_url
 from saas_media_library.gate import AccessGate
 from saas_media_library.migration import (
+    find_profile,
     policy_key,
     profiles_from_policies,
     render_profiles_module,
@@ -57,6 +58,8 @@ __all__ = [
     "ProcessingOptionsAPI",
     "UploadsAPI",
     "UploadProfile",
+    "thumbnail_url",
+    "find_profile",
     "policy_key",
     "profiles_from_policies",
     "render_profiles_module",

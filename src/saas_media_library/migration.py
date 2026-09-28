@@ -3,6 +3,8 @@
 ``profiles_from_policies`` maps each policy to an equivalent profile;
 ``render_profiles_module`` writes them as Python source to commit to the app.
 ``python -m saas_media_library.migrate_policies`` does both for a tenant.
+``find_profile`` looks a profile up by the old ``(resource_type,
+collection_name)`` pair, as the server resolved policies.
 """
 
 from __future__ import annotations
@@ -23,7 +25,10 @@ rules, then commit this module and upload with
 ``client.uploads.upload_file(..., profile=UPLOAD_PROFILES[key])``.
 
 Keys are "resource_type/collection_name", or "resource_type" for a policy
-without a collection.
+without a collection. To look one up by the old pair, use
+``saas_media_library.find_profile(UPLOAD_PROFILES, resource_type,
+collection_name)``: like the server, it falls back to the resource type's
+profile.
 """
 
 from saas_media_library import AssetKind, ProcessingConfig, UploadProfile, Visibility
@@ -34,6 +39,25 @@ from saas_media_library import AssetKind, ProcessingConfig, UploadProfile, Visib
 def policy_key(resource_type: str, collection_name: Optional[str] = None) -> str:
     """``"resource_type/collection_name"``, or ``"resource_type"`` without a collection."""
     return f"{resource_type}/{collection_name}" if collection_name else resource_type
+
+
+def find_profile(
+    profiles: Mapping[str, UploadProfile],
+    resource_type: str,
+    collection_name: Optional[str] = None,
+) -> Optional[UploadProfile]:
+    """The profile that replaces the policy the server used for this pair.
+
+    Same resolution as the server's policy lookup: the exact
+    ``"resource_type/collection_name"`` profile, else the resource type's
+    default (``"resource_type"``, a policy without a collection), else None:
+    no policy applied to that pair, so the upload needs a profile of its own.
+    """
+    if collection_name is not None:
+        profile = profiles.get(policy_key(resource_type, collection_name))
+        if profile is not None:
+            return profile
+    return profiles.get(policy_key(resource_type))
 
 
 def profiles_from_policies(policies: Iterable[ResourcePolicy]) -> Dict[str, UploadProfile]:
@@ -47,14 +71,18 @@ def profiles_from_policies(policies: Iterable[ResourcePolicy]) -> Dict[str, Uplo
     needed. The profile's ``name`` is its key.
 
     Raises:
-        ValueError: if two policies map to the same key.
+        ValueError: if two policies map to the same key, or a policy allows a
+            MIME type that is not ``type/subtype``.
     """
     profiles: Dict[str, UploadProfile] = {}
     for policy in policies:
         key = policy_key(policy.resource_type, policy.collection_name)
         if key in profiles:
             raise ValueError(f"More than one resource policy maps to profile key {key!r}")
-        profiles[key] = _profile_from_policy(key, policy)
+        try:
+            profiles[key] = _profile_from_policy(key, policy)
+        except ValueError as exc:
+            raise ValueError(f"Resource policy {key!r} cannot be converted: {exc}") from exc
     return dict(sorted(profiles.items()))
 
 

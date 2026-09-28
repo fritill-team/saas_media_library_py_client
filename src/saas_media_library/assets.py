@@ -88,8 +88,15 @@ class AssetsAPI:
     ) -> Asset:
         """Change an asset's visibility tier.
 
-        v1 supports PRIVATE <-> RESTRICTED only. PUBLIC transitions raise
-        ``ValidationError``.
+        Transitions to or from PUBLIC also move the asset's S3-stored files
+        between the private and public buckets; if that fails the server
+        answers 400 (``MediaLibraryError``).
+
+        Once the server turns on ``RESTRICTED_ASSETS_SERVICE_ONLY`` or
+        ``MANAGE_RESTRICTED_PREVIEWS_PRIVILEGED_ONLY``, only a privileged
+        caller (a service token, or a trusted user with a privileged role)
+        may move a RESTRICTED asset to another visibility; anyone else gets
+        403 (``AuthenticationError``).
         """
         resp = self._http.patch(
             f"{self.MANAGE_BASE}/{asset_id}",
@@ -106,6 +113,11 @@ class AssetsAPI:
         """Change visibility for multiple assets in a single call.
 
         POST /v1/manage/assets/bulk-visibility
+
+        Assets the change fails for are counted in ``failed``: a failed move
+        between buckets, or (with the server's RESTRICTED switches on) a
+        RESTRICTED asset changed by a caller who is not privileged, whose
+        item carries the error ``forbidden``. See ``update_visibility``.
         """
         payload = {
             "assetIds": [str(a) for a in asset_ids],

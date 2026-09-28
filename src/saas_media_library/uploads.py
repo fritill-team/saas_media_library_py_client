@@ -6,6 +6,7 @@ import io
 import logging
 import mimetypes
 import os
+import stat
 import tempfile
 from typing import Any, BinaryIO, Dict, Iterator, Mapping, Optional, Tuple, Union
 from uuid import UUID
@@ -23,7 +24,11 @@ from saas_media_library.models import (
     UploadSession,
     Visibility,
 )
-from saas_media_library.profiles import UploadProfile, processing_config_payload
+from saas_media_library.profiles import (
+    UploadProfile,
+    _file_mime_type,
+    processing_config_payload,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -40,8 +45,11 @@ class UploadsAPI:
     """Chunked uploads without a resource policy.
 
     The app's ``UploadProfile`` supplies the kind, visibility and processing
-    settings, and checks the file before anything is sent. The server only
-    requires an authenticated caller for policy-less uploads.
+    settings, and checks the file before anything is sent. The server accepts
+    policy-less upload sessions (every call: create, get, parts, finalize,
+    abort) only from a trusted caller: the tenant's service token, or a user
+    of a ``token_exchange`` tenant. Others get 403 (``AuthenticationError``)
+    unless the server sets ``POLICYLESS_UPLOADS_ALLOW_UNVERIFIED_USERS``.
 
     ``upload_file`` runs the whole flow; the lower-level methods map 1:1 to
     the ``/v1/manage/uploads/sessions`` endpoints.
@@ -74,10 +82,13 @@ class UploadsAPI:
         explicit arguments override it. With a profile and ``validate=True``,
         ``profile.validate_file(mime_type, expected_size_bytes)`` runs first.
         ``resource_type`` is never sent, so no resource policy is involved.
+        ``mime_type`` is sent normalized (``"Image/PNG; q=1"`` as
+        ``"image/png"``), with or without a profile.
 
         Raises:
             TypeError: if neither ``kind`` nor ``profile`` is given.
-            UploadRejected: if the profile rejects the file.
+            UploadRejected: if the profile rejects the file, or ``mime_type``
+                is not ``type/subtype``.
         """
         fields: Dict[str, Any] = profile.to_session_fields() if profile is not None else {}
         if kind is not None:
@@ -94,7 +105,7 @@ class UploadsAPI:
 
         # Only processingConfig has a camelCase alias on the server; the other
         # request fields are snake_case.
-        payload: Dict[str, Any] = {"mime_type": mime_type, **fields}
+        payload: Dict[str, Any] = {"mime_type": _file_mime_type(mime_type), **fields}
         if original_filename is not None:
             payload["original_filename"] = original_filename
         if expected_size_bytes is not None:
@@ -197,8 +208,9 @@ class UploadsAPI:
         The file is read once: each part's checksum (always sent, the server
         requires it) and, with ``verify_checksum``, the whole-file SHA-256
         passed to ``finalize`` are computed while uploading. Only
-        non-seekable streams are first copied to a temp file to learn their
-        size.
+        non-seekable streams, and paths that are not regular files with a
+        known size (FIFOs, ``/dev/stdin``, ``/proc`` files), are first copied
+        to a temp file to learn their size.
 
         ``part_size_bytes`` defaults to the size the server returns; a
         custom value must not be smaller than it.
@@ -296,8 +308,16 @@ def _open_source(source: UploadSource) -> Iterator[Tuple[BinaryIO, int, Optional
         yield io.BytesIO(source), size_bytes, None
     elif isinstance(source, (str, os.PathLike)):
         path = os.fspath(source)
+        name = os.path.basename(path)
         with open(path, "rb") as f:
-            yield f, os.fstat(f.fileno()).st_size, os.path.basename(path)
+            st = os.fstat(f.fileno())
+            # FIFOs, character devices and /proc files report st_size 0 (or a
+            # placeholder); only a non-empty regular file's size is trusted.
+            if stat.S_ISREG(st.st_mode) and st.st_size > 0:
+                yield f, st.st_size, name
+            else:
+                with _spooled(f) as (spool, size_bytes):
+                    yield spool, size_bytes, name
     else:
         name = _stream_name(source)
         seekable = getattr(source, "seekable", None)
@@ -307,13 +327,21 @@ def _open_source(source: UploadSource) -> Iterator[Tuple[BinaryIO, int, Optional
             source.seek(start)
             yield source, end - start, name
         else:
-            with tempfile.SpooledTemporaryFile(max_size=_SPOOL_MAX_BYTES) as spool:
-                size_bytes = 0
-                while chunk := source.read(1024 * 1024):
-                    spool.write(chunk)
-                    size_bytes += len(chunk)
-                spool.seek(0)
+            with _spooled(source) as (spool, size_bytes):
                 yield spool, size_bytes, name
+
+
+@contextlib.contextmanager
+def _spooled(source: BinaryIO) -> Iterator[Tuple[BinaryIO, int]]:
+    """Copy ``source`` to a temp file (in memory up to ``_SPOOL_MAX_BYTES``)
+    and yield it rewound, with its size."""
+    with tempfile.SpooledTemporaryFile(max_size=_SPOOL_MAX_BYTES) as spool:
+        size_bytes = 0
+        while chunk := source.read(1024 * 1024):
+            spool.write(chunk)
+            size_bytes += len(chunk)
+        spool.seek(0)
+        yield spool, size_bytes
 
 
 def _stream_name(stream: BinaryIO) -> Optional[str]:

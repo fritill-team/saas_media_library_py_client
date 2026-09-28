@@ -8,12 +8,14 @@ import pytest
 import respx
 
 from saas_media_library import (
+    AssetUrlCache,
     AuthenticationError,
     DeliveryAPI,
     DeliveryBatchResolveResult,
     MediaLibraryClient,
     NotFoundError,
     ResolveStatus,
+    thumbnail_url,
 )
 
 
@@ -233,3 +235,146 @@ def test_assets_delivery_get_and_list() -> None:
         assert client.assets.delivery_list(kind="image").total == 0
 
     assert list_route.calls.last.request.url.params["kind"] == "image"
+
+
+# ── resolve(..., cache=) ──────────────────────────────────────────────
+
+
+@respx.mock
+def test_resolve_with_cache_requests_only_misses_and_keeps_order() -> None:
+    requests: list = []
+    respx.post(f"{DELIVERY_URL}/resolve").mock(side_effect=_resolve_handler(requests))
+    a, b, c = uuid4(), uuid4(), uuid4()
+    cache = AssetUrlCache()
+
+    with _make_client() as client:
+        client.delivery.resolve([a], cache=cache)
+        items = client.delivery.resolve([b, a, str(c), b], cache=cache)
+
+    assert requests == [[str(a)], [str(b), str(c)]]
+    assert [i.asset_id for i in items] == [b, a, c, b]
+    assert all(i.status == ResolveStatus.OK for i in items)
+
+
+@respx.mock
+def test_resolve_with_cache_stores_under_the_clients_tenant() -> None:
+    requests: list = []
+    respx.post(f"{DELIVERY_URL}/resolve").mock(side_effect=_resolve_handler(requests))
+    asset_id = uuid4()
+    cache = AssetUrlCache(clock=lambda: 0.0)
+
+    with _make_client() as client:
+        [item] = client.delivery.resolve([asset_id], cache=cache)
+
+    assert client.tenant_id == client.delivery.tenant_id == TENANT_ID
+    assert cache.get(asset_id, tenant_id=TENANT_ID) == item
+    assert cache.get(asset_id) is None
+
+
+@respx.mock
+def test_resolve_with_cache_is_scoped_by_tenant() -> None:
+    requests: list = []
+    respx.post(f"{DELIVERY_URL}/resolve").mock(side_effect=_resolve_handler(requests))
+    asset_id = uuid4()
+    cache = AssetUrlCache()
+
+    with MediaLibraryClient(base_url=BASE_URL, tenant_id="tenant-a", token="t") as a, \
+            MediaLibraryClient(base_url=BASE_URL, tenant_id="tenant-b", token="t") as b:
+        a.delivery.resolve([asset_id], cache=cache)
+        b.delivery.resolve([asset_id], cache=cache)
+        a.delivery.resolve([asset_id], cache=cache)
+
+    assert len(requests) == 2
+    tenants = [call.request.headers["X-Tenant"] for call in respx.calls]
+    assert tenants == ["tenant-a", "tenant-b"]
+
+
+@respx.mock
+def test_resolve_with_cache_does_not_cache_other_statuses() -> None:
+    missing = uuid4()
+    route = respx.post(f"{DELIVERY_URL}/resolve").mock(return_value=httpx.Response(200, json={
+        "items": [{"assetId": str(missing), "status": "not_found"}], "total": 1,
+    }))
+    cache = AssetUrlCache()
+
+    with _make_client() as client:
+        client.delivery.resolve([missing], cache=cache)
+        [item] = client.delivery.resolve([missing], cache=cache)
+
+    assert item.status == ResolveStatus.NOT_FOUND
+    assert route.call_count == 2
+
+
+@respx.mock
+def test_resolve_with_cache_fills_in_missing_results() -> None:
+    respx.post(f"{DELIVERY_URL}/resolve").mock(
+        return_value=httpx.Response(200, json={"items": [], "total": 0}))
+    asset_id = uuid4()
+
+    with _make_client() as client:
+        [item] = client.delivery.resolve([asset_id], cache=AssetUrlCache())
+
+    assert item.asset_id == asset_id
+    assert item.status == ResolveStatus.ERROR
+
+
+@respx.mock
+def test_resolve_with_cache_all_hits_makes_no_request() -> None:
+    requests: list = []
+    route = respx.post(f"{DELIVERY_URL}/resolve").mock(side_effect=_resolve_handler(requests))
+    cache = AssetUrlCache()
+    ids = [uuid4(), uuid4()]
+
+    with _make_client() as client:
+        client.delivery.resolve(ids, cache=cache)
+        assert client.delivery.resolve([], cache=cache) == []
+        client.delivery.resolve(ids[::-1], cache=cache)
+
+    assert route.call_count == 1
+
+
+# ── thumbnail_url ─────────────────────────────────────────────────────
+
+
+def _result_with_renditions(asset_id, renditions, thumbnail=None) -> DeliveryBatchResolveResult:
+    asset = _delivery_asset(asset_id)
+    asset["renditions"] = renditions
+    return DeliveryBatchResolveResult.model_validate({
+        "assetId": str(asset_id), "status": "ok", "thumbnailUrl": thumbnail, "asset": asset,
+    })
+
+
+def _rendition(rendition_type: str, url) -> dict:
+    return {"id": str(uuid4()), "renditionType": rendition_type, "status": "ready",
+            "entrypoint": "x", "previewUrl": url}
+
+
+def test_thumbnail_url_prefers_the_thumbnail_rendition() -> None:
+    result = _result_with_renditions(
+        uuid4(),
+        [_rendition("hls", "https://media.test/hls?token=secret"),
+         _rendition("thumbnail", "https://cdn/thumb-256.webp")],
+        thumbnail="https://cdn/item-thumb.webp",
+    )
+
+    assert thumbnail_url(result) == "https://cdn/thumb-256.webp"
+
+
+def test_thumbnail_url_falls_back_to_the_items_thumbnail() -> None:
+    result = _result_with_renditions(
+        uuid4(), [_rendition("thumbnail", None), _rendition("hls", "https://media.test/hls?token=secret")],
+        thumbnail="https://cdn/item-thumb.webp",
+    )
+    forbidden = DeliveryBatchResolveResult.model_validate({
+        "assetId": str(uuid4()), "status": "forbidden", "thumbnailUrl": "https://cdn/locked.webp",
+    })
+
+    assert thumbnail_url(result) == "https://cdn/item-thumb.webp"
+    assert thumbnail_url(forbidden) == "https://cdn/locked.webp"
+
+
+def test_thumbnail_url_is_never_another_link() -> None:
+    asset_id = uuid4()
+    result = _result_with_renditions(asset_id, [_rendition("hls", "https://media.test/hls?token=secret")])
+
+    assert thumbnail_url(result) is None

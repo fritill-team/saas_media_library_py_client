@@ -29,8 +29,9 @@ class MediaLibraryClient:
         # Uploads, with rules defined in the app (UploadProfile)
         result = client.uploads.upload_file("cover.png", profile=COURSE_COVER)
 
-        # Delivery links (a service token also resolves RESTRICTED assets)
-        items = client.delivery.resolve(asset_ids)
+        # Delivery links (a service token also resolves RESTRICTED assets),
+        # optionally through a cache shared by every user of the app
+        items = client.delivery.resolve(asset_ids, cache=url_cache)
 
         # RESTRICTED assets: the app decides who gets the links
         gate = AccessGate(client, can_access, cache=AssetUrlCache())
@@ -87,8 +88,13 @@ class MediaLibraryClient:
         self.assets = AssetsAPI(self._http)
         self.access = AssetAccessAPI(self._http)
         self.uploads = UploadsAPI(self._http)
-        self.delivery = DeliveryAPI(self._http)
+        self.delivery = DeliveryAPI(self._http, tenant_id=tenant_id)
         self.processing = ProcessingOptionsAPI(self._http)
+
+    @property
+    def tenant_id(self) -> str:
+        """The tenant this client works in (sent as ``X-Tenant``)."""
+        return self._tenant_id
 
     def set_token(self, token: str) -> None:
         """Update the auth token (e.g. after refresh)."""

@@ -15,6 +15,7 @@ from saas_media_library import (
     AuthenticationError,
     DeliveryBatchResolveResult,
     MediaLibraryClient,
+    MediaLibraryError,
     ResolveStatus,
 )
 
@@ -222,8 +223,8 @@ def test_denied_result_from_cache_never_leaks(server) -> None:
     assert len(server.requests) == 1
     assert result.status == ResolveStatus.FORBIDDEN and result.asset is None
     _assert_no_secret_urls(asset_id, gate.to_payload([result]))
-    # The cached entry still serves entitled users.
-    assert cache.get(asset_id).asset.download_url is not None
+    # The cached entry (kept under the client's tenant) still serves entitled users.
+    assert cache.get(asset_id, tenant_id=TENANT_ID).asset.download_url is not None
 
 
 @pytest.mark.parametrize("status", ["not_found", "error", "forbidden", "some_new_status"])
@@ -344,7 +345,30 @@ def test_can_access_generator_is_accepted(server) -> None:
     assert gate.resolve("u", [a])[0].status == ResolveStatus.OK
 
 
-@pytest.mark.parametrize("bad", [None, True, "not-a-list"])
+def test_can_access_mapping_allows_only_truthy_values(server) -> None:
+    ids = [uuid4() for _ in range(5)]
+    verdicts = dict(zip(ids, [True, False, 0, None, 1]))
+    gate = AccessGate(_make_client(), lambda user, asset_ids: verdicts)
+
+    results = gate.resolve("u", ids)
+
+    assert [r.status for r in results] == ["ok", "forbidden", "forbidden", "forbidden", "ok"]
+    for asset_id, result in zip(ids, results):
+        if result.status == "forbidden":
+            _assert_no_secret_urls(asset_id, gate.to_payload([result]))
+
+
+def test_can_access_mapping_of_denials_fails_closed(server) -> None:
+    asset_id = uuid4()
+    gate = AccessGate(_make_client(), lambda user, ids: {str(i): False for i in ids})
+
+    result = gate.resolve_one("mallory", asset_id)
+
+    assert result.status == ResolveStatus.FORBIDDEN and result.asset is None
+    _assert_no_secret_urls(asset_id, gate.to_payload([result]))
+
+
+@pytest.mark.parametrize("bad", [None, True, False, "not-a-list", b"bytes"])
 def test_can_access_must_return_ids(server, bad) -> None:
     gate = AccessGate(_make_client(), lambda user, ids: bad)
 
@@ -396,6 +420,41 @@ def test_media_library_errors_propagate() -> None:
             gate.resolve("u", [uuid4()])
 
 
+@pytest.mark.parametrize(
+    "mock",
+    [
+        {"side_effect": httpx.ConnectError("refused")},
+        {"return_value": httpx.Response(200, text="<html>Bad gateway</html>")},
+        {"return_value": httpx.Response(200, json={"unexpected": True})},
+    ],
+    ids=["transport", "not-json", "no-items"],
+)
+def test_transport_and_decode_failures_raise_media_library_error(mock) -> None:
+    with respx.mock:
+        respx.post(RESOLVE_URL).mock(**mock)
+        gate = AccessGate(_make_client(), Recorder())
+        with pytest.raises(MediaLibraryError) as info:
+            gate.resolve("u", [uuid4()])
+
+    assert info.value.__cause__ is not None
+
+
+@pytest.mark.parametrize(
+    "error",
+    [httpx.ConnectError("entitlement service down"), json.JSONDecodeError("bad", "", 0)],
+    ids=["httpx", "json"],
+)
+def test_can_access_errors_propagate_unchanged(server, error) -> None:
+    def can_access(user, ids):
+        raise error
+
+    with pytest.raises(type(error)) as info:
+        AccessGate(_make_client(), can_access).resolve("u", [uuid4()])
+
+    assert info.value is error
+    assert not isinstance(info.value, MediaLibraryError)
+
+
 # ── Cache ──────────────────────────────────────────────────────────────
 
 
@@ -444,6 +503,68 @@ def test_cached_result_reports_remaining_expiry(server) -> None:
 
     assert result.asset.download_url_expires_in == 3000
     assert len(server.requests) == 1
+
+
+def test_assets_still_processing_are_not_cached(server) -> None:
+    # A result taken during processing has no renditions yet: ask again.
+    asset_id = uuid4()
+    item = _ok_item(asset_id)
+    item["asset"]["status"] = "processing"
+    server.set(asset_id, item)
+    gate = AccessGate(_make_client(), Recorder([asset_id]), cache=AssetUrlCache())
+
+    gate.resolve("alice", [asset_id])
+    server.set(asset_id, _ok_item(asset_id))  # processing finished
+    [result] = gate.resolve("bob", [asset_id])
+    gate.resolve("carol", [asset_id])
+
+    assert result.asset.status == "ready"
+    assert len(server.requests) == 2  # the ready result is cached
+
+
+class TenantServer:
+    """POST /delivery/assets/resolve that answers per X-Tenant: each tenant
+    only finds its own assets."""
+
+    def __init__(self, assets_by_tenant: Dict[str, set]) -> None:
+        self.assets_by_tenant = assets_by_tenant
+        self.requests: List[tuple] = []
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        tenant = request.headers["X-Tenant"]
+        ids = json.loads(request.content)["assetIds"]
+        self.requests.append((tenant, ids))
+        items = [
+            _ok_item(aid) if aid in self.assets_by_tenant.get(tenant, set())
+            else {"assetId": aid, "status": "not_found"}
+            for aid in ids
+        ]
+        return httpx.Response(200, json={"items": items, "total": len(items)})
+
+
+@pytest.mark.parametrize("allowed", [True, False])
+def test_shared_cache_never_serves_another_tenants_result(allowed) -> None:
+    asset_id = uuid4()
+    fake = TenantServer({"tenant-b": {str(asset_id)}})
+    cache = AssetUrlCache()
+    client_a = MediaLibraryClient(base_url=BASE_URL, tenant_id="tenant-a", token="service-a")
+    client_b = MediaLibraryClient(base_url=BASE_URL, tenant_id="tenant-b", token="service-b")
+    # Tenant A's can_access is tenant-agnostic (e.g. a lookup by asset id).
+    gate_a = AccessGate(client_a, Recorder([asset_id] if allowed else []), cache=cache)
+    gate_b = AccessGate(client_b, Recorder([asset_id]), cache=cache)
+
+    with respx.mock:
+        respx.post(RESOLVE_URL).mock(side_effect=fake)
+        assert gate_b.resolve_one("bob", asset_id).status == ResolveStatus.OK
+        [result] = gate_a.resolve("mallory", [asset_id])
+
+    # Tenant A's service token was asked, and the asset is not A's.
+    assert fake.requests == [("tenant-b", [str(asset_id)]), ("tenant-a", [str(asset_id)])]
+    assert result.status == ResolveStatus.NOT_FOUND
+    assert result.asset is None and result.thumbnail_url is None
+    _assert_no_secret_urls(asset_id, gate_a.to_payload([result]))
+    # Tenant B's entry is untouched and still served to B.
+    assert cache.get(asset_id, tenant_id="tenant-b") is not None
 
 
 # ── Payload ────────────────────────────────────────────────────────────

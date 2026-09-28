@@ -4,11 +4,14 @@
 docs/resource-policy/retirement.md). The server no longer checks MIME types,
 sizes or permissions for policy-less uploads; the app does, with the same
 rules the server's ``ResourcePolicy.validate_file`` / ``check_permission``
-applied.
+applied. One difference: MIME types are normalized (parameters and
+whitespace dropped, lowercased) before they are compared and before they are
+sent, so the server stores the canonical type its processors match on.
 """
 
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, Iterable, Mapping, Optional, Set, Union
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -23,6 +26,13 @@ from saas_media_library.models import (
 )
 
 ANY_MIME_TYPE = "*/*"
+
+# RFC 9110 token characters (lowercase), without "*".
+_MIME_TOKEN = r"[!#$%&'+\-.^_`|~0-9a-z]+"
+_MIME_TYPE_RE = re.compile(rf"{_MIME_TOKEN}/{_MIME_TOKEN}")
+# In allowed_mime_types a part may also be "*" ("*/*", or "video/*", which is
+# compared literally, as the server's policies did).
+_ALLOWED_MIME_TYPE_RE = re.compile(rf"(?:{_MIME_TOKEN}|\*)/(?:{_MIME_TOKEN}|\*)")
 
 
 def processing_config_payload(
@@ -64,7 +74,10 @@ class UploadProfile(BaseModel):
         )
 
     ``allowed_mime_types``: None or a set containing ``"*/*"`` accepts any
-    type; an empty set accepts none. Types are compared case-insensitively.
+    type; an empty set accepts none. Every entry must be ``type/subtype``;
+    entries and file types are normalized (``" Image/PNG; q=1"`` becomes
+    ``"image/png"``) before they are compared. ``"*/*"`` is the only
+    wildcard: an entry such as ``"video/*"`` only matches itself.
 
     ``processing_config``: None lets the server default apply (no step
     options, transcription off). An ``enable_transcription`` left unset is
@@ -94,7 +107,13 @@ class UploadProfile(BaseModel):
     def _normalize_mime_types(cls, v: Optional[Set[str]]) -> Optional[Set[str]]:
         if v is None:
             return None
-        return {_normalize_mime(m) for m in v}
+        normalized = set()
+        for mime_type in v:
+            value = _normalize_mime(mime_type, pattern=_ALLOWED_MIME_TYPE_RE)
+            if value is None:
+                raise ValueError(f"{mime_type!r} is not a MIME type (type/subtype)")
+            normalized.add(value)
+        return normalized
 
     @field_validator("processing_config")
     @classmethod
@@ -117,7 +136,9 @@ class UploadProfile(BaseModel):
         """Check a file before uploading it.
 
         Mirrors the server's resource-policy check: ``size_bytes`` is
-        required when the profile sets a min or max size.
+        required when the profile sets a min or max size. ``mime_type`` must
+        be ``type/subtype`` (parameters are ignored), whatever the profile
+        allows.
 
         Raises:
             UploadRejected: with ``reason`` set to the rule that failed.
@@ -201,10 +222,11 @@ class UploadProfile(BaseModel):
         return repr(self.name) if self.name else f"for kind {self.kind}"
 
     def _check_mime_type(self, mime_type: str) -> None:
+        normalized = _file_mime_type(mime_type)
         allowed = self.allowed_mime_types
         if allowed is None or ANY_MIME_TYPE in allowed:
             return
-        if _normalize_mime(mime_type) not in allowed:
+        if normalized not in allowed:
             raise UploadRejected(
                 f"MIME type {mime_type} is not allowed by upload profile {self._label}",
                 reason=UploadRejected.MIME_TYPE,
@@ -223,5 +245,24 @@ class UploadProfile(BaseModel):
             )
 
 
-def _normalize_mime(mime_type: str) -> str:
-    return mime_type.strip().lower()
+def _file_mime_type(mime_type: str) -> str:
+    """A file's MIME type as compared and sent: ``type/subtype``, lowercased,
+    without parameters or surrounding whitespace.
+
+    Raises:
+        UploadRejected: (``reason="mime_type"``) if it is not ``type/subtype``.
+    """
+    normalized = _normalize_mime(mime_type, pattern=_MIME_TYPE_RE)
+    if normalized is None:
+        raise UploadRejected(
+            f"MIME type {mime_type!r} is not a valid type/subtype",
+            reason=UploadRejected.MIME_TYPE,
+        )
+    return normalized
+
+
+def _normalize_mime(mime_type: Any, *, pattern: re.Pattern) -> Optional[str]:
+    if not isinstance(mime_type, str):
+        return None
+    value = mime_type.split(";", 1)[0].strip().lower()
+    return value if pattern.fullmatch(value) else None

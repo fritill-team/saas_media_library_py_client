@@ -5,6 +5,7 @@ from typing import List
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 import httpx
+import pydantic
 import pytest
 import respx
 from fastapi import FastAPI, Header, HTTPException
@@ -207,6 +208,93 @@ def test_media_library_failure_is_a_502_not_the_users_401(http) -> None:
 
     assert resp.status_code == 502
     assert resp.json() == {"detail": "Media library request failed"}
+
+
+@pytest.mark.parametrize(
+    "error",
+    [httpx.ConnectError("refused"), httpx.ConnectTimeout("slow"), httpx.ReadTimeout("slow")],
+    ids=["connect-error", "connect-timeout", "read-timeout"],
+)
+def test_unreachable_media_library_is_a_502(http, error) -> None:
+    asset_id = str(uuid4())
+    with respx.mock:
+        respx.post(RESOLVE_URL).mock(side_effect=error)
+        resolve = http.post("/media/resolve", json={"assetIds": [asset_id]}, headers={"X-User": "a"})
+        get = http.get(f"/media/{asset_id}", headers={"X-User": "a"})
+
+    for resp in (resolve, get):
+        assert resp.status_code == 502
+        assert resp.json() == {"detail": "Media library request failed"}
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        httpx.Response(200, text="<html>Bad gateway</html>"),
+        httpx.Response(200, json={"unexpected": True}),
+        httpx.Response(200, json=[]),
+        httpx.Response(200, json={"items": [{"status": "ok"}], "total": 1}),
+    ],
+    ids=["not-json", "no-items", "not-an-object", "item-without-asset-id"],
+)
+def test_malformed_media_library_response_is_a_502(http, response) -> None:
+    asset_id = str(uuid4())
+    with respx.mock:
+        respx.post(RESOLVE_URL).mock(return_value=response)
+        resolve = http.post("/media/resolve", json={"assetIds": [asset_id]}, headers={"X-User": "a"})
+        get = http.get(f"/media/{asset_id}", headers={"X-User": "a"})
+
+    for resp in (resolve, get):
+        assert resp.status_code == 502
+        assert resp.json() == {"detail": "Media library request failed"}
+
+
+def test_app_errors_are_not_reported_as_media_library_failures(media) -> None:
+    # A can_access bug is the app's own 500, not a 502.
+    client = MediaLibraryClient(base_url=BASE_URL, tenant_id=TENANT_ID, token="service-token")
+    app = FastAPI()
+    app.include_router(create_media_router(AccessGate(client, lambda user, ids: None), lambda: "u"))
+
+    resp = TestClient(app, raise_server_exceptions=False).post(
+        "/media/resolve", json={"assetIds": [str(uuid4())]}
+    )
+
+    assert resp.status_code == 500
+
+
+def _pydantic_error() -> Exception:
+    try:
+        pydantic.TypeAdapter(int).validate_python("not a number")
+    except pydantic.ValidationError as exc:
+        return exc
+    raise AssertionError("expected a ValidationError")
+
+
+@pytest.mark.parametrize(
+    "make_error",
+    [
+        lambda: httpx.ConnectError("entitlement service down"),
+        _pydantic_error,
+        lambda: json.JSONDecodeError("bad", "", 0),
+    ],
+    ids=["httpx", "pydantic", "json"],
+)
+def test_can_access_errors_of_media_library_types_stay_500(media, make_error) -> None:
+    # The app's own httpx/pydantic/json errors are not media library failures.
+    def can_access(user, ids):
+        raise make_error()
+
+    client = MediaLibraryClient(base_url=BASE_URL, tenant_id=TENANT_ID, token="service-token")
+    app = FastAPI()
+    app.include_router(create_media_router(AccessGate(client, can_access), lambda: "u"))
+    http = TestClient(app, raise_server_exceptions=False)
+    asset_id = str(uuid4())
+
+    resolve = http.post("/media/resolve", json={"assetIds": [asset_id]})
+    get = http.get(f"/media/{asset_id}")
+
+    assert resolve.status_code == 500
+    assert get.status_code == 500
 
 
 # ── GET /{asset_id} ────────────────────────────────────────────────────

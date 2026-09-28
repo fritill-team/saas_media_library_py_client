@@ -304,15 +304,19 @@ class ResourcePoliciesAPI:
 
     @deprecated(
         "client.policies",
-        "Use client.processing.get_schema(). Its response has no policy "
-        "defaults/permissionSchema; it adds uploadDefaults, autoStartSteps, "
-        "gatedSteps and transcriptionAvailable.",
+        "Use client.processing.get_schema(); its response has a different "
+        "shape: camelCase keys (mime_types_by_kind -> mimeTypesByKind, "
+        "pipelines_by_kind -> pipelinesByKind, configurable_steps -> "
+        "configurableSteps), no policy defaults or permission_schema, and "
+        "added uploadDefaults, autoStartSteps, gatedSteps and "
+        "transcriptionAvailable.",
     )
     def get_schema(self) -> Dict[str, Any]:
         """Get the full metadata schema (kinds, visibilities, MIME types, defaults).
 
-        Still the legacy policy-form schema; ``client.processing.get_schema()``
-        is its replacement, with upload defaults instead of policy defaults.
+        Still the legacy policy-form schema, with snake_case keys.
+        ``client.processing.get_schema()`` is its replacement, in a different
+        shape: camelCase keys, and upload defaults instead of policy defaults.
         """
         resp = self._http.get(f"{self.BASE}/schema")
         raise_for_status(resp)

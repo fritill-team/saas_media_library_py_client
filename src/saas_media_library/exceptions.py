@@ -16,6 +16,20 @@ class MediaLibraryError(Exception):
         self.status_code = status_code
         self.body = body
 
+    def __reduce__(self):
+        # The default rebuilds with ``cls(*self.args)``, which fails for
+        # subclasses with required keyword-only arguments (``UploadRejected``'s
+        # ``reason``). Restore ``args`` and attributes without calling
+        # ``__init__`` so every subclass survives pickle and copy.
+        return (_rebuild, (type(self), self.args, self.__dict__))
+
+
+def _rebuild(cls: type, args: tuple, state: dict) -> MediaLibraryError:
+    exc = cls.__new__(cls, *args)
+    exc.args = args
+    exc.__dict__.update(state)
+    return exc
+
 
 class NotFoundError(MediaLibraryError):
     """Resource not found (404)."""
