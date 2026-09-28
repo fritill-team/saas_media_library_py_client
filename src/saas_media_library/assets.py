@@ -6,6 +6,7 @@ from uuid import UUID
 import httpx
 
 from saas_media_library._http import raise_for_status
+from saas_media_library.delivery import DeliveryAPI
 from saas_media_library.models import (
     Asset,
     AssetKind,
@@ -42,6 +43,7 @@ class AssetsAPI:
 
     def __init__(self, http: httpx.Client):
         self._http = http
+        self._delivery = DeliveryAPI(http)
 
     # ── Manage endpoints (admin) ───────────────────────────────────────
 
@@ -117,6 +119,8 @@ class AssetsAPI:
         )
 
     # ── Delivery endpoints (public / client-facing) ────────────────────
+    # Kept for compatibility; ``client.delivery`` (DeliveryAPI) is the home
+    # of these calls.
 
     def delivery_list(
         self,
@@ -128,23 +132,20 @@ class AssetsAPI:
         page_size: int = 10,
     ) -> PaginatedDeliveryAssets:
         """List assets with slim response (delivery)."""
-        params = self._build_list_params(kind, status, query, page, page_size)
-        resp = self._http.get(self.DELIVERY_BASE, params=params)
-        raise_for_status(resp)
-        return PaginatedDeliveryAssets.model_validate(resp.json())
+        return self._delivery.list(
+            kind=kind, status=status, query=query, page=page, page_size=page_size
+        )
 
     def delivery_get(self, asset_id: UUID | str) -> DeliveryAsset:
         """Get a single asset with resolved download URL (delivery)."""
-        resp = self._http.get(f"{self.DELIVERY_BASE}/{asset_id}")
-        raise_for_status(resp)
-        return DeliveryAsset.model_validate(resp.json())
+        return self._delivery.get(asset_id)
 
     def delivery_resolve(self, asset_ids: List[UUID | str]) -> List[DeliveryBatchResolveResult]:
-        """Batch resolve download URLs (delivery, slim response)."""
-        payload = {"assetIds": [str(a) for a in asset_ids]}
-        resp = self._http.post(f"{self.DELIVERY_BASE}/resolve", json=payload)
-        raise_for_status(resp)
-        return [DeliveryBatchResolveResult.model_validate(i) for i in resp.json()["items"]]
+        """Batch resolve download URLs (delivery, slim response).
+
+        Same as ``client.delivery.resolve``: any number of ids, in batches.
+        """
+        return self._delivery.resolve(asset_ids)
 
     # ── Private helpers ────────────────────────────────────────────────
 

@@ -17,6 +17,10 @@ from saas_media_library import (
 BASE_URL = "https://media.test"
 TENANT_ID = str(uuid4())
 
+# client.access is deprecated (warnings are tested in test_deprecations.py);
+# these tests keep covering its behaviour until it is removed.
+pytestmark = pytest.mark.filterwarnings("ignore:client\\.access\\.:DeprecationWarning")
+
 
 def _make_client() -> MediaLibraryClient:
     return MediaLibraryClient(base_url=BASE_URL, tenant_id=TENANT_ID, token="t")

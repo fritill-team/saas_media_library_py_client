@@ -6,6 +6,7 @@ from uuid import UUID
 
 import httpx
 
+from saas_media_library._deprecation import deprecated
 from saas_media_library._http import raise_for_status
 from saas_media_library.exceptions import NotFoundError
 from saas_media_library.models import (
@@ -16,10 +17,24 @@ from saas_media_library.models import (
     ResourcePolicy,
     Visibility,
 )
+from saas_media_library.processing_options import ProcessingOptionsAPI
+
+_REPLACEMENT = (
+    "Resource policies are being retired: define upload rules in your app with "
+    "UploadProfile and upload with client.uploads (profiles_from_policies() "
+    "converts existing policies)."
+)
+_deprecated = deprecated("client.policies", _REPLACEMENT)
 
 
 class ResourcePoliciesAPI:
     """Manage resource policies for a tenant.
+
+    .. deprecated::
+        Resource policies are being retired (see the server's
+        docs/resource-policy/retirement.md). Every method warns: use
+        ``UploadProfile`` with ``client.uploads`` for uploads and
+        ``client.processing`` for the schema / pipeline metadata.
 
     Resource policies define upload constraints, processing pipelines,
     and visibility for each resource type (e.g. "courses", "products").
@@ -29,9 +44,11 @@ class ResourcePoliciesAPI:
 
     def __init__(self, http: httpx.Client):
         self._http = http
+        self._processing = ProcessingOptionsAPI(http)
 
     # ── CRUD ───────────────────────────────────────────────────────────
 
+    @_deprecated
     def upsert(
         self,
         resource_type: str,
@@ -66,7 +83,7 @@ class ResourcePoliciesAPI:
                 "on upload finalization. Use step_options to pre-configure steps "
                 "so they run automatically; otherwise they will pause for user input.",
                 DeprecationWarning,
-                stacklevel=2,
+                stacklevel=3,  # past the @_deprecated wrapper
             )
             deprecated_kwargs.pop("auto_process")
         if deprecated_kwargs:
@@ -101,12 +118,14 @@ class ResourcePoliciesAPI:
         raise_for_status(resp)
         return ResourcePolicy.model_validate(resp.json())
 
+    @_deprecated
     def get(self, policy_id: UUID | str) -> ResourcePolicy:
         """Get a resource policy by ID."""
         resp = self._http.get(f"{self.BASE}/{policy_id}")
         raise_for_status(resp)
         return ResourcePolicy.model_validate(resp.json())
 
+    @_deprecated
     def get_by_name(
         self,
         resource_type: str,
@@ -143,6 +162,7 @@ class ResourcePoliciesAPI:
             )
         return matches[0]
 
+    @_deprecated
     def list(
         self,
         *,
@@ -185,6 +205,7 @@ class ResourcePoliciesAPI:
             )
         return self.get_by_name(resource_type, collection_name).id
 
+    @_deprecated
     def update(
         self,
         policy_id: Optional[UUID | str] = None,
@@ -223,6 +244,7 @@ class ResourcePoliciesAPI:
         raise_for_status(resp)
         return ResourcePolicy.model_validate(resp.json())
 
+    @_deprecated
     def delete(
         self,
         policy_id: Optional[UUID | str] = None,
@@ -246,6 +268,7 @@ class ResourcePoliciesAPI:
 
     # ── Convenience helpers ────────────────────────────────────────────
 
+    @_deprecated
     def activate(
         self,
         policy_id: Optional[UUID | str] = None,
@@ -261,6 +284,7 @@ class ResourcePoliciesAPI:
             is_active=True,
         )
 
+    @_deprecated
     def deactivate(
         self,
         policy_id: Optional[UUID | str] = None,
@@ -278,20 +302,33 @@ class ResourcePoliciesAPI:
 
     # ── Schema / metadata ──────────────────────────────────────────────
 
+    @deprecated(
+        "client.policies",
+        "Use client.processing.get_schema(). Its response has no policy "
+        "defaults/permissionSchema; it adds uploadDefaults, autoStartSteps, "
+        "gatedSteps and transcriptionAvailable.",
+    )
     def get_schema(self) -> Dict[str, Any]:
-        """Get the full metadata schema (kinds, visibilities, MIME types, defaults)."""
+        """Get the full metadata schema (kinds, visibilities, MIME types, defaults).
+
+        Still the legacy policy-form schema; ``client.processing.get_schema()``
+        is its replacement, with upload defaults instead of policy defaults.
+        """
         resp = self._http.get(f"{self.BASE}/schema")
         raise_for_status(resp)
         return resp.json()
 
+    @deprecated("client.policies", "Use client.processing.get_pipelines().")
     def get_available_steps(self) -> Dict[str, Any]:
-        """Get available processing steps and options per AssetKind."""
-        resp = self._http.get(f"{self.BASE}/pipelines/available-steps")
-        raise_for_status(resp)
-        return resp.json()
+        """Get available processing steps and options per AssetKind.
+
+        Delegates to ``client.processing.get_pipelines()`` (same response).
+        """
+        return self._processing.get_pipelines()
 
     # ── Bulk helpers (init container use case) ─────────────────────────
 
+    @_deprecated
     def sync_policies(
         self,
         policies: List[Dict[str, Any]],

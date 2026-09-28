@@ -6,8 +6,15 @@ from uuid import UUID
 
 import httpx
 
+from saas_media_library._deprecation import deprecated
 from saas_media_library._http import raise_for_status
 from saas_media_library.models import AssetAccessGrant
+
+_deprecated = deprecated(
+    "client.access",
+    "Access grants are being retired: decide who may open RESTRICTED assets "
+    "in your app with AccessGate(client, can_access), using a service token.",
+)
 
 
 class BulkGrantResult:
@@ -35,6 +42,13 @@ class BulkRevokeResult:
 class AssetAccessAPI:
     """Manage per-user asset access grants (enrollment-style ACL).
 
+    .. deprecated::
+        Grants are being retired (see the server's
+        docs/asset-access/retirement.md) and every method warns. The app
+        decides access itself with ``AccessGate(client, can_access)`` and
+        resolves links with a service token; the media library ignores
+        grants once ``RESTRICTED_ASSETS_SERVICE_ONLY`` is switched on.
+
     Grants gate downloads of assets with visibility=RESTRICTED. A grant is
     keyed by (asset_id, user_id); re-granting upserts. ``expires_at=None``
     means the grant never expires.
@@ -46,6 +60,7 @@ class AssetAccessAPI:
     def __init__(self, http: httpx.Client):
         self._http = http
 
+    @_deprecated
     def grant(
         self,
         asset_id: UUID | str,
@@ -60,17 +75,20 @@ class AssetAccessAPI:
         raise_for_status(resp)
         return AssetAccessGrant.model_validate(resp.json())
 
+    @_deprecated
     def revoke(self, asset_id: UUID | str, user_id: UUID | str) -> None:
         """Remove a grant. Idempotent — succeeds even if no row existed."""
         resp = self._http.delete(f"{self.BASE}/{asset_id}/access/{user_id}")
         raise_for_status(resp)
 
+    @_deprecated
     def list(self, asset_id: UUID | str) -> List[AssetAccessGrant]:
         """List all (active + expired) grants for an asset."""
         resp = self._http.get(f"{self.BASE}/{asset_id}/access")
         raise_for_status(resp)
         return [AssetAccessGrant.model_validate(i) for i in resp.json()["items"]]
 
+    @_deprecated
     def bulk_grant(
         self,
         asset_ids: List[UUID | str],
@@ -89,6 +107,7 @@ class AssetAccessAPI:
         data = resp.json()
         return BulkGrantResult(items=data["items"], granted=data["granted"], failed=data["failed"])
 
+    @_deprecated
     def bulk_revoke(
         self,
         asset_ids: List[UUID | str],

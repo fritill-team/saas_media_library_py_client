@@ -40,6 +40,18 @@ class AssetStatus(StrEnum):
     DELETED = "deleted"
 
 
+class ResolveStatus(StrEnum):
+    """Per-item status of a delivery batch resolve.
+
+    ``DeliveryBatchResolveResult.status`` stays a plain ``str`` so a newer
+    server status never breaks parsing; compare it against these values.
+    """
+    OK = "ok"                # asset + download URL returned
+    NOT_FOUND = "not_found"  # no such asset in the tenant
+    FORBIDDEN = "forbidden"  # caller may not open it (RESTRICTED); thumbnailUrl may be set
+    ERROR = "error"          # asset exists but its URL could not be resolved
+
+
 # ── Resource Policy models ─────────────────────────────────────────────
 
 class FileConstraints(BaseModel):
@@ -160,6 +172,7 @@ class DeliveryRendition(BaseModel):
     entrypoint: str
     duration_seconds: Optional[float] = Field(None, alias="durationSeconds")
     variants: List[DeliveryRenditionVariant] = Field(default_factory=list)
+    language: Optional[str] = None
     preview_url: Optional[str] = Field(None, alias="previewUrl")
     preview_url_type: Optional[str] = Field(None, alias="previewUrlType")
     preview_url_expires_in: Optional[int] = Field(None, alias="previewUrlExpiresIn")
@@ -192,8 +205,16 @@ class BatchResolveResult(BaseModel):
 
 
 class DeliveryBatchResolveResult(BaseModel):
+    """One item of ``POST /delivery/assets/resolve``.
+
+    ``status`` is one of ``ResolveStatus``: ``ok`` (``asset`` is set),
+    ``not_found``, ``forbidden`` or ``error`` (``error`` explains why).
+    ``thumbnail_url`` is a public thumbnail link, also sent for ``forbidden``
+    and ``error`` items so a locked asset can still show a preview.
+    """
     asset_id: UUID = Field(alias="assetId")
     status: str
+    thumbnail_url: Optional[str] = Field(None, alias="thumbnailUrl")
     asset: Optional[DeliveryAsset] = None
     error: Optional[str] = None
 
@@ -218,6 +239,43 @@ class PaginatedDeliveryAssets(BaseModel):
     page_size: int = Field(alias="pageSize")
 
     model_config = {"populate_by_name": True}
+
+
+# ── Upload session models ──────────────────────────────────────────────
+# The upload endpoints answer in snake_case, so these models have no aliases.
+
+class UploadSession(BaseModel):
+    id: UUID
+    state: str  # "initiated" | "in_progress" | "finalized" | "failed" | "expired" | "aborted"
+    part_size_bytes: int
+    parts_expected: Optional[int] = None
+    parts_received: int
+    received_parts: List[int] = Field(default_factory=list)
+    expires_at: datetime
+    checksum_verified: bool
+    final_blob_id: Optional[UUID] = None
+
+
+class UploadPartResult(BaseModel):
+    session_id: UUID
+    part_number: int
+    size_bytes: int
+    sha256_hex: str
+    verified: bool
+    parts_received: int
+
+
+class UploadFinalizeResult(BaseModel):
+    session_id: UUID
+    final_blob_id: UUID
+    asset_id: UUID
+    checksum_verified: bool
+    sha256_hex: str
+
+
+class UploadAbortResult(BaseModel):
+    session_id: UUID
+    aborted: bool
 
 
 # ── Asset access (per-user grant) models ───────────────────────────────

@@ -29,6 +29,29 @@ class ValidationError(MediaLibraryError):
     """Request validation error (422)."""
 
 
+class UploadRejected(ValidationError):
+    """A file or asset failed an ``UploadProfile`` check on the client side.
+
+    Raised before anything is sent to the server, so ``status_code`` is None.
+    Subclasses ``ValidationError`` so a single ``except ValidationError``
+    handles both the app's own upload rules and the server's 422 responses.
+
+    ``reason`` says which rule failed (one of the constants below), so callers
+    can map it to their own HTTP status (e.g. 415 for ``MIME_TYPE``, 413 for
+    ``TOO_LARGE``).
+    """
+
+    MIME_TYPE = "mime_type"
+    SIZE_REQUIRED = "size_required"
+    TOO_LARGE = "too_large"
+    TOO_SMALL = "too_small"
+    KIND = "kind"
+
+    def __init__(self, message: str, *, reason: str):
+        super().__init__(message)
+        self.reason = reason
+
+
 class ConflictError(MediaLibraryError):
     """Conflict error (409)."""
 
