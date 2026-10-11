@@ -9,6 +9,7 @@ from saas_media_library.resource_policies import ResourcePoliciesAPI
 from saas_media_library.assets import AssetsAPI
 from saas_media_library.asset_access import AssetAccessAPI
 from saas_media_library.delivery import DeliveryAPI
+from saas_media_library.grants import GrantsAPI
 from saas_media_library.processing_options import ProcessingOptionsAPI
 from saas_media_library.uploads import UploadsAPI
 
@@ -36,6 +37,11 @@ class MediaLibraryClient:
         # RESTRICTED assets: the app decides who gets the links
         gate = AccessGate(client, can_access, cache=AssetUrlCache())
         items = gate.resolve(current_user, asset_ids)
+
+        # Browser access to /manage: the app checks, the media library
+        # enforces a short-lived grant (service token required)
+        grant = client.grants.issue(["read", "update"], asset_ids=[asset_id],
+                                    subject=str(user.id))
 
         # Processing options metadata (kinds, MIME types, pipeline steps)
         schema = client.processing.get_schema()
@@ -90,6 +96,7 @@ class MediaLibraryClient:
         self.uploads = UploadsAPI(self._http)
         self.delivery = DeliveryAPI(self._http, tenant_id=tenant_id)
         self.processing = ProcessingOptionsAPI(self._http)
+        self.grants = GrantsAPI(self._http)
 
     @property
     def tenant_id(self) -> str:

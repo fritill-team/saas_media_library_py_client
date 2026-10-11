@@ -181,7 +181,10 @@ def start_upload(user, filename, mime_type, size_bytes):
 ```
 
 The browser then uploads parts to `PUT /v1/manage/uploads/sessions/{id}/parts/{n}`
-and calls `.../finalize` with its own tenant login. That works only when the
+and calls `.../finalize`. With a [media grant](#media-grants-browser-access-to-manage)
+for that session (`client.grants.issue(["upload"], session_ids=[session.id])`)
+this always works; or the browser can create the session itself with a grant
+carrying the profile. Without a grant, with its own tenant login, it works only when the
 browser's login is trusted (see [Who may upload](#who-may-upload)): the
 tenant is on `token_exchange`, or the server runs with
 `POLICYLESS_UPLOADS_ALLOW_UNVERIFIED_USERS=true`. Otherwise the parts and
@@ -195,6 +198,54 @@ COURSE_VIDEO.verify_asset(client.assets.get(asset_id))  # raises UploadRejected
 
 The lower-level calls map 1:1 to the endpoints: `create_session`,
 `get_session`, `upload_part`, `finalize`, `abort`.
+
+### Media grants: browser access to `/manage`
+
+The browser can call the media library's `/manage` endpoints directly (upload,
+edit, process, renditions) without your backend re-implementing them: your
+backend checks the user with its own rules, then asks for a short-lived grant
+with the service token. The media library enforces it.
+
+```python
+grant = client.grants.issue(
+    [GrantScope.READ, GrantScope.UPDATE, GrantScope.UPLOAD],
+    asset_ids=[lesson.video_id],     # read/update/delete/process/renditions need ids
+    profile=COURSE_VIDEO,            # upload: what the session creates
+    subject=str(user.id),            # logged by the server
+    ttl_seconds=600,                 # default 600, max 3600 (server setting)
+)
+return grant.to_payload()            # {"grant": "mlg_…", "expiresAt": …}
+```
+
+The browser sends `Authorization: Bearer mlg_…` (no `X-Tenant` needed). An
+upload made with a grant always uses its profile: kind, visibility and
+processing config, the allowed MIME types (`"video/*"` matches all video
+types on the server) and `max_size_bytes`. `min_size_bytes` and the
+profile's permissions are your backend's check before issuing. The grant
+does not cover the asset an upload creates: store the `assetId` from
+finalize and issue a new grant if needed. Grants are bearer tokens; keep
+them short and scoped to what is on screen. See the server's
+`docs/security/media-grants.md`.
+
+With FastAPI, one router gives the browser `POST /media/grants`:
+
+```python
+from saas_media_library.integrations.fastapi import create_grant_router
+
+def authorize(user, req, profile):        # your rules
+    if req.profile:
+        return profile.check_permissions(user.permissions)
+    return all(user.can_edit(a) for a in req.asset_ids)
+
+app.include_router(create_grant_router(
+    client, authorize, get_current_user,
+    profiles={"course-video": COURSE_VIDEO},   # the browser names a profile
+    get_subject=lambda user: str(user.id),
+))
+```
+
+The body is `{"scopes": [...], "assetIds": [...], "sessionIds": [...],
+"profile": "<name>"}`. `manage:*` is never issued through it.
 
 ### Processing options
 

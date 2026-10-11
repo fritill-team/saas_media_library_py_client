@@ -4,6 +4,7 @@ from saas_media_library.assets import BulkVisibilityResult
 from saas_media_library.cache import AssetUrlCache
 from saas_media_library.delivery import DeliveryAPI, thumbnail_url
 from saas_media_library.gate import AccessGate
+from saas_media_library.grants import GrantScope, GrantsAPI, MediaGrant, grant_profile_payload
 from saas_media_library.migration import (
     find_profile,
     policy_key,
@@ -53,6 +54,10 @@ __all__ = [
     "AssetAccessAPI",
     "BulkVisibilityResult",
     "AccessGate",
+    "GrantScope",
+    "GrantsAPI",
+    "MediaGrant",
+    "grant_profile_payload",
     "AssetUrlCache",
     "DeliveryAPI",
     "ProcessingOptionsAPI",
