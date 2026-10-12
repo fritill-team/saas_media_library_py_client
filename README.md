@@ -66,8 +66,8 @@ COURSE_COVER = UploadProfile(
     allowed_mime_types={"image/jpeg", "image/png", "image/webp"},
     max_size_bytes=5_000_000,
     required_permissions={"courses:write"},
-    # Pre-configure step_options so the pipeline runs fully automatically.
-    # Without options, configurable steps pause for user input.
+    # step_options override the processors' defaults. Steps left out run with
+    # their defaults; none waits for input.
     processing_config=ProcessingConfig(
         step_options={"image_derive": {"formats": ["webp"], "sizes": [256, 512, 1024]}},
     ),
@@ -527,11 +527,13 @@ connection errors, timeouts, malformed responses) answer 502 with
 `{"detail": "Media library request failed"}`, so an expired service token is
 not mistaken for the user's own 401; the cause is logged. The gate raises
 all of these as `MediaLibraryError` (transport and decoding errors with the
-original as `__cause__`), and the routes catch only that. Exceptions from your
-own code (`can_access`, `get_current_user`) are never turned into a 502,
-whatever their type, even `httpx` or `pydantic` errors: they stay 500 (or go
-to your own exception handlers). The frontend only changes its base URL for
-restricted assets.
+original as `__cause__`), and the routes catch only that. Exceptions from
+`get_current_user` are never turned into a 502. Exceptions from `can_access`
+stay 500 (or go to your own exception handlers), even `httpx` or `pydantic`
+errors, with one exception: a `MediaLibraryError` (or subclass) raised by
+`can_access`, for example from a media library call it makes itself, can't be
+told apart from the gate's own and answers 502 like them. The frontend only
+changes its base URL for restricted assets.
 
 ## Migrating from resource policies and access grants
 
