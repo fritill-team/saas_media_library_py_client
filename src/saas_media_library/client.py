@@ -8,6 +8,10 @@ from saas_media_library._http import raise_for_status
 from saas_media_library.resource_policies import ResourcePoliciesAPI
 from saas_media_library.assets import AssetsAPI
 from saas_media_library.asset_access import AssetAccessAPI
+from saas_media_library.delivery import DeliveryAPI
+from saas_media_library.grants import GrantsAPI
+from saas_media_library.processing_options import ProcessingOptionsAPI
+from saas_media_library.uploads import UploadsAPI
 
 __all__ = ["MediaLibraryClient", "raise_for_status"]
 
@@ -23,15 +27,28 @@ class MediaLibraryClient:
             token="service-account-jwt",
         )
 
-        # Resource policies
-        policy = client.policies.upsert(...)
+        # Uploads, with rules defined in the app (UploadProfile)
+        result = client.uploads.upload_file("cover.png", profile=COURSE_COVER)
+
+        # Delivery links (a service token also resolves RESTRICTED assets),
+        # optionally through a cache shared by every user of the app
+        items = client.delivery.resolve(asset_ids, cache=url_cache)
+
+        # RESTRICTED assets: the app decides who gets the links
+        gate = AccessGate(client, can_access, cache=AssetUrlCache())
+        items = gate.resolve(current_user, asset_ids)
+
+        # Browser access to /manage: the app checks, the media library
+        # enforces a short-lived grant (service token required)
+        grant = client.grants.issue(["read", "update"], asset_ids=[asset_id],
+                                    subject=str(user.id))
+
+        # Processing options metadata (kinds, MIME types, pipeline steps)
+        schema = client.processing.get_schema()
 
         # Assets
         asset = client.assets.get(asset_id)
         client.assets.update_visibility(asset_id, Visibility.RESTRICTED)
-
-        # Per-user access grants (enrollment)
-        client.access.grant(asset_id, user_id, expires_at=...)
 
         # Always close when done
         client.close()
@@ -39,7 +56,11 @@ class MediaLibraryClient:
     Or as a context manager::
 
         with MediaLibraryClient(...) as client:
-            client.policies.upsert(...)
+            client.uploads.upload_file(...)
+
+    ``client.policies`` (resource policies) and ``client.access`` (access
+    grants) are deprecated and warn on every call; use ``UploadProfile`` with
+    ``client.uploads``, and ``AccessGate``, instead.
     """
 
     def __init__(
@@ -72,6 +93,15 @@ class MediaLibraryClient:
         self.policies = ResourcePoliciesAPI(self._http)
         self.assets = AssetsAPI(self._http)
         self.access = AssetAccessAPI(self._http)
+        self.uploads = UploadsAPI(self._http)
+        self.delivery = DeliveryAPI(self._http, tenant_id=tenant_id)
+        self.processing = ProcessingOptionsAPI(self._http)
+        self.grants = GrantsAPI(self._http)
+
+    @property
+    def tenant_id(self) -> str:
+        """The tenant this client works in (sent as ``X-Tenant``)."""
+        return self._tenant_id
 
     def set_token(self, token: str) -> None:
         """Update the auth token (e.g. after refresh)."""

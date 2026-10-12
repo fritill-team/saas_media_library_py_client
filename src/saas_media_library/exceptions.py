@@ -16,6 +16,20 @@ class MediaLibraryError(Exception):
         self.status_code = status_code
         self.body = body
 
+    def __reduce__(self):
+        # The default rebuilds with ``cls(*self.args)``, which fails for
+        # subclasses with required keyword-only arguments (``UploadRejected``'s
+        # ``reason``). Restore ``args`` and attributes without calling
+        # ``__init__`` so every subclass survives pickle and copy.
+        return (_rebuild, (type(self), self.args, self.__dict__))
+
+
+def _rebuild(cls: type, args: tuple, state: dict) -> MediaLibraryError:
+    exc = cls.__new__(cls, *args)
+    exc.args = args
+    exc.__dict__.update(state)
+    return exc
+
 
 class NotFoundError(MediaLibraryError):
     """Resource not found (404)."""
@@ -27,6 +41,29 @@ class AuthenticationError(MediaLibraryError):
 
 class ValidationError(MediaLibraryError):
     """Request validation error (422)."""
+
+
+class UploadRejected(ValidationError):
+    """A file or asset failed an ``UploadProfile`` check on the client side.
+
+    Raised before anything is sent to the server, so ``status_code`` is None.
+    Subclasses ``ValidationError`` so a single ``except ValidationError``
+    handles both the app's own upload rules and the server's 422 responses.
+
+    ``reason`` says which rule failed (one of the constants below), so callers
+    can map it to their own HTTP status (e.g. 415 for ``MIME_TYPE``, 413 for
+    ``TOO_LARGE``).
+    """
+
+    MIME_TYPE = "mime_type"
+    SIZE_REQUIRED = "size_required"
+    TOO_LARGE = "too_large"
+    TOO_SMALL = "too_small"
+    KIND = "kind"
+
+    def __init__(self, message: str, *, reason: str):
+        super().__init__(message)
+        self.reason = reason
 
 
 class ConflictError(MediaLibraryError):
