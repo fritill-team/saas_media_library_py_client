@@ -225,6 +225,26 @@ def test_claim_upload_unknown_session() -> None:
 
 
 @respx.mock(assert_all_called=False)
+def test_claim_upload_check_record_refuses_before_attaching(respx_mock) -> None:
+    session_id, asset_id = uuid4(), uuid4()
+    _mock_upload(respx_mock, session_id, asset_id)
+    store = _store_with(session_id, context={"courseId": "c1"})
+
+    def for_course(course_id):
+        return lambda record: record.context.get("courseId") == course_id
+
+    with pytest.raises(UploadRejected) as exc:
+        claim_upload(_client(), store, session_id, asset_id, owner="u1", profile=COVER,
+                     check_record=for_course("c2"))
+    assert exc.value.reason == UploadRejected.CONTEXT_MISMATCH
+    assert store.get(session_id).attached_asset_id is None
+
+    claimed = claim_upload(_client(), store, session_id, asset_id, owner="u1", profile=COVER,
+                           check_record=for_course("c1"))
+    assert claimed.asset.id == asset_id
+
+
+@respx.mock(assert_all_called=False)
 def test_claim_upload_twice_is_rejected(respx_mock) -> None:
     session_id, asset_id = uuid4(), uuid4()
     _mock_upload(respx_mock, session_id, asset_id)

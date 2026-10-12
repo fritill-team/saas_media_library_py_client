@@ -67,6 +67,7 @@ class UploadRejected(ValidationError):
     VISIBILITY = "visibility"
     UNKNOWN_SESSION = "unknown_session"
     PROFILE_MISMATCH = "profile_mismatch"
+    CONTEXT_MISMATCH = "context_mismatch"
     ALREADY_ATTACHED = "already_attached"
 
     def __init__(self, message: str, *, reason: str):

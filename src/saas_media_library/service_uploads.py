@@ -23,7 +23,7 @@ from __future__ import annotations
 import threading
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional, Protocol, Union
+from typing import Any, Callable, Dict, Optional, Protocol, Union
 from uuid import UUID
 
 from saas_media_library.exceptions import UploadRejected
@@ -109,18 +109,22 @@ def claim_upload(
     *,
     owner: str,
     profile: UploadProfile,
+    check_record: Optional[Callable[[UploadRecord], bool]] = None,
 ) -> ClaimedUpload:
     """Verify and attach a browser upload, once.
 
     Checks that ``store`` has a record of ``session_id`` started by
-    ``owner`` with ``profile`` (by name) and not attached yet, then
+    ``owner`` with ``profile`` (by name) and not attached yet, that
+    ``check_record(record)`` (when given) accepts it, e.g. the upload was
+    started for this course (``record.context``), then
     ``client.uploads.verify_upload`` (finalized, the asset's blob is the
     session's, visibility and profile checks), then marks the record
     attached. ``client`` is a ``MediaLibraryClient`` with the service token.
 
     Raises:
         UploadRejected: ``reason`` is ``UNKNOWN_SESSION`` (no record, or
-            another owner's), ``PROFILE_MISMATCH``, ``ALREADY_ATTACHED``,
+            another owner's), ``PROFILE_MISMATCH``, ``CONTEXT_MISMATCH``
+            (``check_record`` refused), ``ALREADY_ATTACHED``,
             or one from ``verify_upload``.
         NotFoundError: the media library has no such session or asset.
     """
@@ -137,6 +141,11 @@ def claim_upload(
             f"Upload session {session_id} was started for upload profile "
             f"{record.profile!r}, not {profile.name!r}",
             reason=UploadRejected.PROFILE_MISMATCH,
+        )
+    if check_record is not None and not check_record(record):
+        raise UploadRejected(
+            f"Upload session {session_id} was started for something else",
+            reason=UploadRejected.CONTEXT_MISMATCH,
         )
     if record.attached_asset_id is not None:
         raise UploadRejected(
