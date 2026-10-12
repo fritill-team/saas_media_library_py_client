@@ -236,7 +236,8 @@ def create_upload_router(
       the upload session with the profile, saves an ``UploadRecord`` in
       ``store`` and issues an ``upload`` grant for that one session.
       201 ``{"sessionId", "grant", "grantId", "expiresIn", "expiresAt",
-      "uploadBaseUrl", "tenant", "partSizeBytes"}``.
+      "tenant", "partSizeBytes"}``, plus ``"uploadBaseUrl"`` only when
+      ``upload_base_url`` is set.
     - ``POST {prefix}/{session_id}/grant``: a new grant for a session the
       user started and has not attached yet (the browser refreshes before
       ``expiresAt``). 200 with ``{"sessionId", "grant", "grantId",
@@ -244,7 +245,10 @@ def create_upload_router(
       user's; 409 once attached.
 
     The browser sends ``Authorization: Bearer <grant>`` and ``X-Tenant:
-    <tenant>`` to ``{uploadBaseUrl}/manage/uploads/sessions/{sessionId}/…``,
+    <tenant>`` to ``{upload base}/manage/uploads/sessions/{sessionId}/…``,
+    where the upload base is the frontend's choice (the Nuxt module's
+    ``mediaLibrary.serviceUploads``: the public media library, or its
+    same-origin pass-through route),
     then posts ``{sessionId, assetId}`` to the app's own attach endpoint,
     which calls ``service_uploads.claim_upload``.
 
@@ -252,10 +256,12 @@ def create_upload_router(
     token**. ``profiles`` maps the names the browser may send to profiles;
     each profile's ``name`` must be its key (``claim_upload`` compares it).
     ``get_owner(user)`` is the app's user reference, stored in the record
-    and sent as the grant's subject. ``upload_base_url`` is the media
-    library's API root as browsers reach it, with ``/v1``; it defaults to
-    the client's ``base_url`` + ``/v1``. ``ttl_seconds`` is the grants'
-    lifetime (server default 600, at most its ``GRANT_MAX_TTL``).
+    and sent as the grant's subject. ``upload_base_url`` is optional and
+    only for frontends that do not choose an upload base themselves: the
+    public address browsers use, with ``/v1``. Leave it unset otherwise.
+    The client's own ``base_url`` is a server-side address and is never
+    sent to browsers. ``ttl_seconds`` is the grants' lifetime (server
+    default 600, at most its ``GRANT_MAX_TTL``).
 
     Other responses: 403 when ``can_start`` refuses; 413 / 415 / 422 when
     the profile rejects the file (``{"detail", "reason"}``, ``reason`` as
@@ -284,7 +290,8 @@ def create_upload_router(
     for key, profile in known.items():
         if profile.name != key:
             raise ValueError(f"upload profile {key!r} must have name={key!r} (has {profile.name!r})")
-    base_url = (upload_base_url or f"{str(client._base_url).rstrip('/')}/v1").rstrip("/")
+    # Never the client's base_url: that is the server-side address.
+    base_url = upload_base_url.rstrip("/") if upload_base_url else None
     router = APIRouter(prefix=prefix)
 
     def issue(session_id: Any, user: Any) -> Dict[str, Any]:
@@ -339,12 +346,14 @@ def create_upload_router(
         except Exception:
             _abort_quietly(client, session.id)
             raise
-        return {
+        started = {
             **body,
-            "uploadBaseUrl": base_url,
             "tenant": client.tenant_id,
             "partSizeBytes": session.part_size_bytes,
         }
+        if base_url:
+            started["uploadBaseUrl"] = base_url
+        return started
 
     @router.post("/{session_id}/grant", response_model=None)
     def refresh_grant(

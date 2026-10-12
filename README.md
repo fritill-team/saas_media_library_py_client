@@ -641,7 +641,7 @@ upload_router = create_upload_router(
     profiles={"course-cover": COURSE_COVER},  # keyed by each profile's name
     store=upload_store,
     get_owner=lambda user: str(user.id),
-    upload_base_url="https://media.example.com/v1",  # as browsers reach it
+    # upload_base_url: leave unset; the frontend chooses where parts go
     prefix="/courses/uploads",
 )
 ```
@@ -658,7 +658,7 @@ The start request body (`StartUploadRequest`):
 
 | Route | Response | When |
 |---|---|---|
-| `POST {prefix}` | 201 `{"sessionId", "grant", "grantId", "scopes", "expiresIn", "expiresAt", "uploadBaseUrl", "tenant", "partSizeBytes"}` | Started |
+| `POST {prefix}` | 201 `{"sessionId", "grant", "grantId", "scopes", "expiresIn", "expiresAt", "tenant", "partSizeBytes"}`, plus `"uploadBaseUrl"` only when `upload_base_url` is set | Started |
 | | 413 / 415 / 422 `{"detail", "reason"}` | The profile rejected the file (`reason` as [`UploadRejected.reason`](#uploadrejectedreason)) |
 | | 403 | `can_start` returned a falsy value |
 | | 422 | Unknown profile name, no name with several profiles, or an invalid body |
@@ -668,12 +668,21 @@ The start request body (`StartUploadRequest`):
 | | 409 | The session is already attached |
 
 `ttl_seconds` sets the grants' lifetime (server default 600, at most its
-`GRANT_MAX_TTL`); the browser refreshes before it ends. `upload_base_url`
-defaults to the client's `base_url` + `/v1`: set it when your services reach
-the media library on an internal address. The media library must list your
-site in `CORS_ALLOWED_ORIGINS`.
+`GRANT_MAX_TTL`); the browser refreshes before it ends.
 
-With the Nuxt module, the browser side is one call:
+**Where the parts go is the frontend's decision.** The service never sends
+its own address: `base_url` is where *your service* reaches the media
+library (often an internal address) and is never put in a response. The
+Nuxt module chooses the upload base from its config: its same-origin
+pass-through route (`mediaLibrary.serviceUploads.proxy`, which forwards the
+browser's grant untouched), or the media library's public address
+(`serviceUploads.baseURL`, which needs your site in the media library's
+`CORS_ALLOWED_ORIGINS`). Set `upload_base_url` (the public address, with
+`/v1`) only for a frontend that cannot choose; it is then returned as
+`uploadBaseUrl`.
+
+With the Nuxt module (and `mediaLibrary.serviceUploads` set), the browser
+side is one call:
 
 ```ts
 const { upload } = useMLServiceUpload()
@@ -1978,7 +1987,7 @@ Needs the `fastapi` extra.
 |---|---|---|
 | `create_media_router(gate, get_current_user, *, prefix="/media")` | `APIRouter` | `POST {prefix}/resolve`, `GET {prefix}/{asset_id}`, see [The media router](#the-media-router) |
 | `create_grant_router(client, authorize, get_current_user, *, profiles=None, get_subject=None, ttl_seconds=None, prefix="/media")` | `APIRouter` | `POST {prefix}/grants`, see [Let the browser ask for grants](#let-the-browser-ask-for-grants) |
-| `create_upload_router(client, can_start, get_current_user, *, profiles, store, get_owner, upload_base_url=None, ttl_seconds=None, prefix="/uploads")` | `APIRouter` | `POST {prefix}` and `POST {prefix}/{session_id}/grant`, see [Uploads started by your backend](#uploads-started-by-your-backend). Raises `ValueError` for no profiles, or a profile whose `name` is not its key |
+| `create_upload_router(client, can_start, get_current_user, *, profiles, store, get_owner, upload_base_url=None, ttl_seconds=None, prefix="/uploads")` | `APIRouter` | `POST {prefix}` and `POST {prefix}/{session_id}/grant`, see [Uploads started by your backend](#uploads-started-by-your-backend). `upload_base_url` is optional and returned to browsers as is; the client's `base_url` never is. Raises `ValueError` for no profiles, or a profile whose `name` is not its key |
 | `GrantRequest` | — | The grant router's request body |
 | `StartUploadRequest` | — | The upload router's start body |
 | `ResolveRequest` | — | The media router's resolve body: `asset_ids` (`assetIds`), 1 to 100 UUIDs |
@@ -2042,6 +2051,19 @@ method emits a `DeprecationWarning`. Replacement: `AccessGate`.
 
 <a id="upgrading-and-server-compatibility"></a>
 ## Upgrading
+
+### From v0.23: `create_upload_router` no longer sends `base_url`
+
+Without `upload_base_url`, the start response used to carry the client's
+`base_url` + `/v1` as `uploadBaseUrl`. That is the service-side address
+(often internal), so the response now leaves `uploadBaseUrl` out, and the
+frontend chooses where parts go.
+
+- Services that pass `upload_base_url`: nothing changes.
+- Services that relied on the fallback: configure the frontend first. With
+  the Nuxt module, set `mediaLibrary.serviceUploads` (`proxy: true` for the
+  same-origin pass-through, or `baseURL` for the public media library) in a
+  version that has it, then upgrade the service.
 
 ### From v0.18
 
