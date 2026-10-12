@@ -17,7 +17,6 @@ from saas_media_library.models import (
     ResourcePolicy,
     Visibility,
 )
-from saas_media_library.processing_options import ProcessingOptionsAPI
 
 _REPLACEMENT = (
     "Resource policies are being retired: define upload rules in your app with "
@@ -44,7 +43,6 @@ class ResourcePoliciesAPI:
 
     def __init__(self, http: httpx.Client):
         self._http = http
-        self._processing = ProcessingOptionsAPI(http)
 
     # ── CRUD ───────────────────────────────────────────────────────────
 
@@ -326,9 +324,13 @@ class ResourcePoliciesAPI:
     def get_available_steps(self) -> Dict[str, Any]:
         """Get available processing steps and options per AssetKind.
 
-        Delegates to ``client.processing.get_pipelines()`` (same response).
+        Calls the legacy route, as before, so apps (and their test mocks)
+        see the same request. ``client.processing.get_pipelines()`` returns
+        the same payload from the new route.
         """
-        return self._processing.get_pipelines()
+        resp = self._http.get(f"{self.BASE}/pipelines/available-steps")
+        raise_for_status(resp)
+        return resp.json()
 
     # ── Bulk helpers (init container use case) ─────────────────────────
 

@@ -82,7 +82,7 @@ def server():
             return_value=httpx.Response(204))
         mock.get("/v1/manage/resource-policies/schema").mock(
             return_value=httpx.Response(200, json={"defaults": {}}))
-        mock.get("/v1/manage/processing-options/pipelines", name="pipelines").mock(
+        mock.get("/v1/manage/resource-policies/pipelines/available-steps", name="legacy_steps").mock(
             return_value=httpx.Response(200, json={"image": {"pipeline": []}}))
         mock.post(f"/v1/manage/assets/{ASSET_ID}/access").mock(
             return_value=httpx.Response(200, json=grant))
@@ -147,12 +147,13 @@ def test_upsert_auto_process_warning_still_points_at_caller(server) -> None:
     assert all(w.filename == __file__ for w in _deprecations(record))
 
 
-def test_get_available_steps_delegates_to_processing(server) -> None:
+def test_get_available_steps_keeps_the_legacy_request(server) -> None:
+    """Same request as v0.18.0 (apps' mocks keep matching), plus the warning."""
     with _make_client() as client, pytest.warns(DeprecationWarning) as record:
         steps = client.policies.get_available_steps()
 
     assert steps == {"image": {"pipeline": []}}
-    assert server["pipelines"].called
+    assert server["legacy_steps"].call_count == 1
     [warning] = _deprecations(record)
     assert "client.processing.get_pipelines()" in str(warning.message)
     assert warning.filename == __file__

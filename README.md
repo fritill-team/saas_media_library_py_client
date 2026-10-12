@@ -622,6 +622,25 @@ removed from this client. Python hides `DeprecationWarning` outside `__main__`
 by default; run tests with `-W error::DeprecationWarning` to find remaining
 calls.
 
+## Upgrading and server compatibility
+
+Code written for v0.18 keeps working unchanged. Two things to know:
+
+- `client.policies.*` and `client.access.*` emit a `DeprecationWarning` on
+  every call. Apps or test suites that turn warnings into errors
+  (`-W error`, pytest `filterwarnings = error`) should ignore
+  `DeprecationWarning` from `saas_media_library` until they migrate.
+- Some new features need a media library that includes them. Against an
+  older server they fail as noted:
+
+| Feature | On an older server |
+|---|---|
+| `client.uploads` without a resource policy (`UploadProfile`) | `ValidationError` (422) |
+| `client.processing` | falls back to the legacy routes |
+| `client.grants` | `NotFoundError` (404) |
+| `delivery.resolve(grants=)` / `get(grants=)` | the header is ignored: assets a grant should cover come back `forbidden` |
+| `AccessGate` / RESTRICTED links via service token | items `forbidden` unless the service token resolves RESTRICTED assets |
+
 ## Context Manager
 
 ```python
