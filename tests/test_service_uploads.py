@@ -403,15 +403,26 @@ def test_start_creates_the_session_and_a_session_grant(respx_mock) -> None:
 
 
 @respx.mock(assert_all_called=False)
-def test_start_defaults_the_only_profile_and_the_upload_base_url(respx_mock) -> None:
+def test_start_defaults_the_only_profile(respx_mock) -> None:
     ml = _MediaLibrary(respx_mock)
     http, _, _ = _app(ttl_seconds=900)
 
     resp = http.post("/uploads", json=START, headers={"X-User": "alice"})
 
     assert resp.status_code == 201
-    assert resp.json()["uploadBaseUrl"] == f"{BASE_URL}/v1"
     assert json.loads(ml.grant.calls.last.request.content)["ttlSeconds"] == 900
+
+
+@respx.mock(assert_all_called=False)
+def test_start_never_sends_the_clients_server_side_address(respx_mock) -> None:
+    _MediaLibrary(respx_mock)
+    http, _, _ = _app()  # no upload_base_url: the frontend chooses
+
+    resp = http.post("/uploads", json=START, headers={"X-User": "alice"})
+
+    assert resp.status_code == 201
+    assert "uploadBaseUrl" not in resp.json()
+    assert BASE_URL not in resp.text
 
 
 @pytest.mark.parametrize(
