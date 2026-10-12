@@ -594,9 +594,12 @@ asset = client.uploads.verify_upload(finished.session_id, finished.asset_id, pro
 ```
 
 `verify_upload` raises `UploadRejected` unless the session is finalized, the
-asset's blob is the session's final blob, and the asset has the profile's
-visibility and passes `profile.verify_asset`. It does not check who started
-the session: `claim_upload` (below) does.
+asset was created by that session (its `upload_session_id`), and the asset
+has the profile's visibility and passes `profile.verify_asset`. Servers that
+don't return `uploadSessionId` get the older check: the asset's blob is the
+session's final blob. Blobs are deduplicated per tenant, so that one also
+accepts another asset with the same bytes. `verify_upload` does not check
+who started the session: `claim_upload` (below) does.
 
 ### Uploads started by your backend
 
@@ -713,9 +716,11 @@ def attach_cover(user, course_id, session_id, asset_id):
 
 It returns `ClaimedUpload(record, asset)`.
 
-Blobs are deduplicated per tenant, so `verify_upload` alone would also accept
-another asset with the same bytes. The owner check and attach-once close
-that gap; the user holds those bytes anyway.
+`verify_upload` matches the asset to the session by `upload_session_id`.
+On servers that don't return it, it falls back to the blob, which
+deduplicated uploads share, so it would also accept another asset with the
+same bytes. The owner check and attach-once close that gap; the user holds
+those bytes anyway.
 
 **Your store.** `InMemoryUploadStore` loses records on restart and is not
 shared between workers. In production, implement `UploadSessionStore`
@@ -1594,6 +1599,7 @@ All enums are `str` enums: they compare equal to their values.
 | `created_at` | `createdAt` | `datetime` | required |
 | `blob_id` | `blobId` | `UUID` | `None` |
 | `resource_policy_id` | `resourcePolicyId` | `UUID` | `None` |
+| `upload_session_id` | `uploadSessionId` | `UUID` | `None` |
 | `renditions` | `renditions` | `List[Rendition]` | `[]` |
 
 #### `Rendition`

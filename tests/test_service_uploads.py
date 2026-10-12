@@ -58,8 +58,10 @@ def _session_json(session_id, *, state="finalized", final_blob_id=None) -> dict:
     }
 
 
-def _asset_json(asset_id, *, blob_id, kind="image", mime="image/png", size=500, visibility="public") -> dict:
-    return {
+def _asset_json(
+    asset_id, *, blob_id, kind="image", mime="image/png", size=500, visibility="public", upload_session_id=None
+) -> dict:
+    data = {
         "id": str(asset_id),
         "kind": kind,
         "originalFilename": "cover.png",
@@ -71,6 +73,10 @@ def _asset_json(asset_id, *, blob_id, kind="image", mime="image/png", size=500, 
         "createdAt": "2026-10-12T12:00:00Z",
         "blobId": str(blob_id),
     }
+    # Left out when None, as older servers do.
+    if upload_session_id is not None:
+        data["uploadSessionId"] = str(upload_session_id)
+    return data
 
 
 def _grant_json(scopes=("upload",)) -> dict:
@@ -132,6 +138,42 @@ def test_verify_upload_rejects_an_asset_from_another_blob(respx_mock) -> None:
         _client().uploads.verify_upload(session_id, asset_id, profile=COVER)
 
     assert exc.value.reason == UploadRejected.ASSET_MISMATCH
+
+
+@respx.mock(assert_all_called=False)
+def test_verify_upload_accepts_the_asset_the_session_created(respx_mock) -> None:
+    session_id, asset_id = uuid4(), uuid4()
+    _mock_upload(respx_mock, session_id, asset_id, upload_session_id=session_id)
+
+    asset = _client().uploads.verify_upload(session_id, asset_id, profile=COVER)
+
+    assert asset.id == asset_id
+    assert asset.upload_session_id == session_id
+
+
+@respx.mock(assert_all_called=False)
+def test_verify_upload_rejects_another_sessions_asset_with_the_same_blob(respx_mock) -> None:
+    # Same bytes uploaded twice: deduplicated to one blob, but the asset
+    # was created by another session.
+    session_id, asset_id = uuid4(), uuid4()
+    _mock_upload(respx_mock, session_id, asset_id, upload_session_id=uuid4())
+
+    with pytest.raises(UploadRejected) as exc:
+        _client().uploads.verify_upload(session_id, asset_id, profile=COVER)
+
+    assert exc.value.reason == UploadRejected.ASSET_MISMATCH
+
+
+@respx.mock(assert_all_called=False)
+def test_verify_upload_falls_back_to_the_blob_without_upload_session_id(respx_mock) -> None:
+    # Older servers don't return uploadSessionId.
+    session_id, asset_id = uuid4(), uuid4()
+    _mock_upload(respx_mock, session_id, asset_id)
+
+    asset = _client().uploads.verify_upload(session_id, asset_id, profile=COVER)
+
+    assert asset.upload_session_id is None
+    assert asset.id == asset_id
 
 
 @pytest.mark.parametrize(

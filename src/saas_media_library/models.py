@@ -148,6 +148,9 @@ class Asset(BaseModel):
     created_at: datetime = Field(alias="createdAt")
     blob_id: Optional[UUID] = Field(None, alias="blobId")
     resource_policy_id: Optional[UUID] = Field(None, alias="resourcePolicyId")
+    # The upload session that created the asset. None from servers that
+    # don't return it, and for assets not created by an upload session.
+    upload_session_id: Optional[UUID] = Field(None, alias="uploadSessionId")
     renditions: List[Rendition] = Field(default_factory=list)
 
     model_config = {"populate_by_name": True}
