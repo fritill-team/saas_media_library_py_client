@@ -200,15 +200,18 @@ class UploadsAPI:
         ``session_id``). Checks that:
 
         - the session is finalized;
-        - the asset's blob is the session's final blob;
+        - the asset was created by the session: its ``upload_session_id``
+          is ``session_id``. Servers that don't return
+          ``upload_session_id`` get the older check instead: the asset's
+          blob is the session's final blob;
         - the asset has the profile's visibility, and passes
           ``profile.verify_asset`` (kind, MIME type, size).
 
-        Blobs are deduplicated per tenant: another asset of the tenant with
-        the same bytes shares the blob and passes too. The browser holds
-        those bytes either way, but if that matters, also check who owns the
-        session (``service_uploads.claim_upload`` does, and records the
-        attach once).
+        With the blob fallback, the check is weaker: blobs are deduplicated
+        per tenant, so another asset of the tenant with the same bytes
+        shares the blob and passes too. The browser holds those bytes
+        either way. This does not check who owns the session:
+        ``service_uploads.claim_upload`` does, and records the attach once.
 
         Returns the asset (``client.assets.get``).
 
@@ -226,7 +229,11 @@ class UploadsAPI:
         resp = self._http.get(f"/v1/manage/assets/{asset_id}")
         raise_for_status(resp)
         asset = Asset.model_validate(resp.json())
-        if asset.blob_id != session.final_blob_id:
+        if asset.upload_session_id is not None:
+            from_session = asset.upload_session_id == session.id
+        else:
+            from_session = asset.blob_id == session.final_blob_id
+        if not from_session:
             raise UploadRejected(
                 f"Asset {asset_id} was not created by upload session {session_id}",
                 reason=UploadRejected.ASSET_MISMATCH,
