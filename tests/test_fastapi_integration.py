@@ -12,6 +12,7 @@ from fastapi import FastAPI, Header, HTTPException
 from fastapi.testclient import TestClient
 
 from saas_media_library import AccessGate, AssetUrlCache, MediaLibraryClient
+from saas_media_library.exceptions import MediaLibraryError
 from saas_media_library.integrations.fastapi import MAX_RESOLVE_IDS, create_media_router
 
 
@@ -295,6 +296,21 @@ def test_can_access_errors_of_media_library_types_stay_500(media, make_error) ->
 
     assert resolve.status_code == 500
     assert get.status_code == 500
+
+
+def test_can_access_media_library_error_answers_502(media) -> None:
+    # Indistinguishable from the gate's own failures (documented in the README).
+    def can_access(user, ids):
+        raise MediaLibraryError("can_access called the media library")
+
+    client = MediaLibraryClient(base_url=BASE_URL, tenant_id=TENANT_ID, token="service-token")
+    app = FastAPI()
+    app.include_router(create_media_router(AccessGate(client, can_access), lambda: "u"))
+    http = TestClient(app, raise_server_exceptions=False)
+    asset_id = str(uuid4())
+
+    assert http.post("/media/resolve", json={"assetIds": [asset_id]}).status_code == 502
+    assert http.get(f"/media/{asset_id}").status_code == 502
 
 
 # ── GET /{asset_id} ────────────────────────────────────────────────────
