@@ -142,3 +142,58 @@ def test_grant_route_hides_service_token_failures(app_client):
     respx.post(GRANTS_URL).mock(return_value=httpx.Response(401, json={"detail": "bad token"}))
     response = http.post("/media/grants", json={"scopes": ["read"], "assetIds": [str(uuid4())]})
     assert response.status_code == 502
+
+
+# ── delivery with grants of several services ──
+
+DELIVERY_URL = f"{BASE_URL}/v1/delivery/assets"
+
+
+@respx.mock
+def test_read_grant_helper():
+    route = respx.post(GRANTS_URL).mock(side_effect=_issued)
+    asset = uuid4()
+    _client().grants.read([asset], subject="u-1")
+    assert json.loads(route.calls.last.request.content) == {
+        "scopes": ["read"], "assetIds": [str(asset)], "subject": "u-1",
+    }
+    with pytest.raises(ValueError):
+        _client().grants.read([])
+
+
+@respx.mock
+def test_resolve_sends_every_grant_in_one_header():
+    seen = []
+
+    def handler(request):
+        seen.append(request.headers.get("x-media-grants"))
+        ids = json.loads(request.content)["assetIds"]
+        return httpx.Response(200, json={"items": [{"assetId": a, "status": "forbidden"} for a in ids]})
+
+    respx.post(f"{DELIVERY_URL}/resolve").mock(side_effect=handler)
+    client = _client()
+    ids = [uuid4() for _ in range(150)]  # two batches, the header on both
+    grant = SimpleNamespace(grant="mlg_b")  # a MediaGrant works too
+    results = client.delivery.resolve(ids, grants=["mlg_a", grant, "mlg_a"])
+    assert len(results) == 150 and seen == ["mlg_a, mlg_b", "mlg_a, mlg_b"]
+
+    client.delivery.resolve(ids[:1])
+    assert seen[-1] is None
+
+    with pytest.raises(ValueError):
+        client.delivery.resolve(ids, grants=[f"mlg_{i}" for i in range(11)])
+    from saas_media_library import AssetUrlCache
+    with pytest.raises(ValueError):
+        client.delivery.resolve(ids, grants=["mlg_a"], cache=AssetUrlCache())
+
+
+@respx.mock
+def test_get_sends_grants():
+    asset = uuid4()
+    route = respx.get(f"{DELIVERY_URL}/{asset}").mock(return_value=httpx.Response(200, json={
+        "id": str(asset), "kind": "image", "title": "x", "status": "ready", "visibility": "private",
+        "mimeType": "image/png", "renditions": [], "downloadType": "presign",
+        "downloadUrl": "https://files/x", "downloadUrlExpiresIn": 300,
+    }))
+    _client().delivery.get(asset, grants="mlg_a")
+    assert route.calls.last.request.headers["x-media-grants"] == "mlg_a"

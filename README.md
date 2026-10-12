@@ -227,6 +227,29 @@ finalize and issue a new grant if needed. Grants are bearer tokens; keep
 them short and scoped to what is on screen. See the server's
 `docs/security/media-grants.md`.
 
+#### Showing assets of several services on one page
+
+All links come from the media library, and each service decides only for
+its own assets. Return a read grant with the data that references them:
+
+```python
+# your API (e.g. GET /lessons/42)
+grant = client.grants.read([lesson.video_id, lesson.cover_id], subject=str(user.id))
+return {"lesson": lesson_payload, "mediaGrant": grant.grant}
+```
+
+The frontend collects the grants of every service on the page and resolves
+everything in one call (`X-Media-Grants`, at most 10 grants). An asset
+resolves only if a grant lists it; one missing grant only affects that
+service's assets. From Python (e.g. server-side rendering):
+
+```python
+items = client.delivery.resolve(asset_ids, grants=[course_grant, profile_grant])
+```
+
+`grants` and `cache` can't be combined. Without a grant, `private` assets
+resolve only while the server's `DELIVERY_AUTH` is not `enforce`.
+
 With FastAPI, one router gives the browser `POST /media/grants`:
 
 ```python

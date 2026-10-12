@@ -95,6 +95,26 @@ class GrantsAPI:
     def __init__(self, http: httpx.Client):
         self._http = http
 
+    def read(
+        self,
+        asset_ids: Iterable[Union[UUID, str]],
+        *,
+        subject: Optional[str] = None,
+        ttl_seconds: Optional[int] = None,
+    ) -> MediaGrant:
+        """A read grant for assets your app returns to one of its users.
+
+        Return it with your data (e.g. ``{"lesson": …, "mediaGrant":
+        grant.grant}``). The frontend sends the grants of every service on
+        the page in one ``POST /delivery/assets/resolve`` (header
+        ``X-Media-Grants``); each asset resolves only if a grant lists it.
+        Only list assets your own rules allow this user to see.
+        """
+        ids = list(asset_ids)
+        if not ids:
+            raise ValueError("read() needs at least one asset id")
+        return self.issue([GrantScope.READ], asset_ids=ids, subject=subject, ttl_seconds=ttl_seconds)
+
     def issue(
         self,
         scopes: Iterable[Union[GrantScope, str]],
