@@ -1,5 +1,5 @@
-"""FastAPI routes that serve media links through an ``AccessGate``, and
-issue media grants for the app's browser users.
+"""FastAPI routes that serve media links through an ``AccessGate``, issue
+media grants for the app's browser users, and start their direct uploads.
 
 Needs the ``fastapi`` extra: ``pip install "saas-media-library[fastapi]"``.
 """
@@ -19,13 +19,15 @@ except ImportError as exc:  # pragma: no cover - depends on the environment
         "saas_media_library.integrations.fastapi requires FastAPI. "
         'Install it with: pip install "saas-media-library[fastapi]"'
     ) from exc
+import httpx
 from pydantic import BaseModel, Field
 
-from saas_media_library.exceptions import MediaLibraryError, ValidationError
+from saas_media_library.exceptions import MediaLibraryError, UploadRejected, ValidationError
 from saas_media_library.gate import AccessGate
 from saas_media_library.grants import GrantScope
 from saas_media_library.profiles import UploadProfile
 from saas_media_library.models import ResolveStatus
+from saas_media_library.service_uploads import UploadRecord, UploadSessionStore
 
 logger = logging.getLogger(__name__)
 
@@ -192,6 +194,190 @@ def create_grant_router(
         return grant.to_payload()
 
     return router
+
+
+class StartUploadRequest(BaseModel):
+    """Body of ``POST {prefix}``: the file the browser is about to upload.
+
+    ``profile`` names one of the app's upload profiles (optional when the
+    router has only one). ``context`` is the app's own data about the upload
+    (e.g. ``{"courseId": "…"}``), passed to ``can_start`` and kept in the
+    ``UploadRecord``."""
+
+    mime_type: str = Field(..., alias="mimeType", min_length=1, max_length=255)
+    size_bytes: int = Field(..., alias="sizeBytes", ge=0)
+    filename: Optional[str] = Field(None, max_length=255)
+    profile: Optional[str] = Field(None, max_length=255)
+    context: Dict[str, Any] = Field(default_factory=dict)
+
+    model_config = {"populate_by_name": True}
+
+
+_REJECTED_STATUS = {UploadRejected.MIME_TYPE: 415, UploadRejected.TOO_LARGE: 413}
+
+
+def create_upload_router(
+    client: Any,
+    can_start: Callable[[Any, StartUploadRequest, UploadProfile], bool],
+    get_current_user: Callable[..., Any],
+    *,
+    profiles: Mapping[str, UploadProfile],
+    store: UploadSessionStore,
+    get_owner: Callable[[Any], str],
+    upload_base_url: Optional[str] = None,
+    ttl_seconds: Optional[int] = None,
+    prefix: str = "/uploads",
+) -> APIRouter:
+    """Start browser uploads that go directly to the media library.
+
+    - ``POST {prefix}`` with ``{"mimeType", "sizeBytes", "filename",
+      "profile", "context"}``: checks the file against the profile, asks
+      ``can_start(user, request, profile)`` (the app's own rule), creates
+      the upload session with the profile, saves an ``UploadRecord`` in
+      ``store`` and issues an ``upload`` grant for that one session.
+      201 ``{"sessionId", "grant", "grantId", "expiresIn", "expiresAt",
+      "uploadBaseUrl", "tenant", "partSizeBytes"}``.
+    - ``POST {prefix}/{session_id}/grant``: a new grant for a session the
+      user started and has not attached yet (the browser refreshes before
+      ``expiresAt``). 200 with ``{"sessionId", "grant", "grantId",
+      "expiresIn", "expiresAt"}``; 404 for an unknown session or another
+      user's; 409 once attached.
+
+    The browser sends ``Authorization: Bearer <grant>`` and ``X-Tenant:
+    <tenant>`` to ``{uploadBaseUrl}/manage/uploads/sessions/{sessionId}/…``,
+    then posts ``{sessionId, assetId}`` to the app's own attach endpoint,
+    which calls ``service_uploads.claim_upload``.
+
+    ``client`` must be a ``MediaLibraryClient`` with the tenant's **service
+    token**. ``profiles`` maps the names the browser may send to profiles;
+    each profile's ``name`` must be its key (``claim_upload`` compares it).
+    ``get_owner(user)`` is the app's user reference, stored in the record
+    and sent as the grant's subject. ``upload_base_url`` is the media
+    library's API root as browsers reach it, with ``/v1``; it defaults to
+    the client's ``base_url`` + ``/v1``. ``ttl_seconds`` is the grants'
+    lifetime (server default 600, at most its ``GRANT_MAX_TTL``).
+
+    Other responses: 403 when ``can_start`` refuses; 413 / 415 / 422 when
+    the profile rejects the file (``{"detail", "reason"}``, ``reason`` as
+    ``UploadRejected``); 422 for an unknown or missing profile name; 502
+    when the media library cannot be reached or refuses the service token.
+
+    Usage::
+
+        store = MyDbUploadStore()  # an UploadSessionStore
+
+        def can_start(user, req, profile):
+            return user.can_edit_course(req.context.get("courseId"))
+
+        app.include_router(create_upload_router(
+            client, can_start, get_current_user,
+            profiles={"course-cover": COURSE_COVER},
+            store=store,
+            get_owner=lambda user: str(user.id),
+            upload_base_url="https://media.example.com/v1",
+            prefix="/courses/uploads",
+        ))
+    """
+    known = dict(profiles)
+    if not known:
+        raise ValueError("create_upload_router() needs at least one upload profile")
+    for key, profile in known.items():
+        if profile.name != key:
+            raise ValueError(f"upload profile {key!r} must have name={key!r} (has {profile.name!r})")
+    base_url = (upload_base_url or f"{str(client._base_url).rstrip('/')}/v1").rstrip("/")
+    router = APIRouter(prefix=prefix)
+
+    def issue(session_id: Any, user: Any) -> Dict[str, Any]:
+        with _upload_errors():
+            grant = client.grants.issue(
+                [GrantScope.UPLOAD],
+                session_ids=[session_id],
+                subject=get_owner(user),
+                ttl_seconds=ttl_seconds,
+            )
+        return {"sessionId": str(session_id), **grant.to_payload()}
+
+    @router.post("", status_code=201, response_model=None)
+    def start_upload(
+        payload: StartUploadRequest,
+        user: Any = Depends(get_current_user),
+    ) -> Any:
+        if payload.profile is None:
+            if len(known) != 1:
+                raise HTTPException(status_code=422, detail="profile is required")
+            profile = next(iter(known.values()))
+        else:
+            profile = known.get(payload.profile)
+            if profile is None:
+                raise HTTPException(status_code=422, detail=f"Unknown upload profile {payload.profile!r}")
+        try:
+            profile.validate_file(payload.mime_type, payload.size_bytes)
+        except UploadRejected as exc:
+            return JSONResponse(
+                status_code=_REJECTED_STATUS.get(exc.reason, 422),
+                content={"detail": str(exc), "reason": exc.reason},
+            )
+        if not can_start(user, payload, profile):
+            raise HTTPException(status_code=403, detail="Not allowed")
+
+        with _upload_errors():
+            session = client.uploads.create_session(
+                mime_type=payload.mime_type,
+                profile=profile,
+                original_filename=payload.filename,
+                expected_size_bytes=payload.size_bytes,
+                validate=False,
+            )
+        try:
+            store.save(UploadRecord(
+                session_id=session.id,
+                owner=get_owner(user),
+                profile=profile.name,
+                context=dict(payload.context),
+            ))
+            body = issue(session.id, user)
+        except Exception:
+            _abort_quietly(client, session.id)
+            raise
+        return {
+            **body,
+            "uploadBaseUrl": base_url,
+            "tenant": client.tenant_id,
+            "partSizeBytes": session.part_size_bytes,
+        }
+
+    @router.post("/{session_id}/grant", response_model=None)
+    def refresh_grant(
+        session_id: UUID,
+        user: Any = Depends(get_current_user),
+    ) -> Dict[str, Any]:
+        record = store.get(session_id)
+        if record is None or record.owner != get_owner(user):
+            raise HTTPException(status_code=404, detail=f"Upload session {session_id} not found")
+        if record.attached_asset_id is not None:
+            raise HTTPException(status_code=409, detail="Upload session is already attached")
+        return issue(session_id, user)
+
+    return router
+
+
+@contextmanager
+def _upload_errors() -> Iterator[None]:
+    # UploadsAPI and GrantsAPI let httpx's transport errors through (only
+    # AccessGate wraps them); a browser should see 502 for those too.
+    try:
+        with _media_library_errors():
+            yield
+    except httpx.HTTPError as exc:
+        logger.warning("Media library request failed: %s: %s", type(exc).__name__, exc)
+        raise HTTPException(status_code=502, detail="Media library request failed") from exc
+
+
+def _abort_quietly(client: Any, session_id: Any) -> None:
+    try:
+        client.uploads.abort(session_id)
+    except Exception as exc:
+        logger.warning("Could not abort upload session %s: %s", session_id, exc)
 
 
 @contextmanager

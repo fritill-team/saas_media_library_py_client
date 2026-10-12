@@ -60,6 +60,14 @@ class UploadRejected(ValidationError):
     TOO_LARGE = "too_large"
     TOO_SMALL = "too_small"
     KIND = "kind"
+    # Attaching a browser upload (``UploadsAPI.verify_upload``,
+    # ``service_uploads.claim_upload``):
+    NOT_FINALIZED = "not_finalized"
+    ASSET_MISMATCH = "asset_mismatch"
+    VISIBILITY = "visibility"
+    UNKNOWN_SESSION = "unknown_session"
+    PROFILE_MISMATCH = "profile_mismatch"
+    ALREADY_ATTACHED = "already_attached"
 
     def __init__(self, message: str, *, reason: str):
         super().__init__(message)

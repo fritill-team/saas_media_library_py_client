@@ -14,8 +14,9 @@ from uuid import UUID
 import httpx
 
 from saas_media_library._http import raise_for_status
-from saas_media_library.exceptions import MediaLibraryError
+from saas_media_library.exceptions import MediaLibraryError, UploadRejected
 from saas_media_library.models import (
+    Asset,
     AssetKind,
     ProcessingConfig,
     UploadAbortResult,
@@ -184,6 +185,60 @@ class UploadsAPI:
         resp = self._http.post(f"{self.BASE}/{session_id}/abort")
         raise_for_status(resp)
         return UploadAbortResult.model_validate(resp.json())
+
+    def verify_upload(
+        self,
+        session_id: UUID | str,
+        asset_id: UUID | str,
+        *,
+        profile: UploadProfile,
+    ) -> Asset:
+        """Check that ``asset_id`` is the asset a browser's upload session made.
+
+        Call it before the app stores an asset id a browser sent back after
+        uploading directly to the media library (with a grant for
+        ``session_id``). Checks that:
+
+        - the session is finalized;
+        - the asset's blob is the session's final blob;
+        - the asset has the profile's visibility, and passes
+          ``profile.verify_asset`` (kind, MIME type, size).
+
+        Blobs are deduplicated per tenant: another asset of the tenant with
+        the same bytes shares the blob and passes too. The browser holds
+        those bytes either way, but if that matters, also check who owns the
+        session (``service_uploads.claim_upload`` does, and records the
+        attach once).
+
+        Returns the asset (``client.assets.get``).
+
+        Raises:
+            UploadRejected: ``reason`` is ``NOT_FINALIZED``,
+                ``ASSET_MISMATCH``, ``VISIBILITY``, or a profile reason.
+            NotFoundError: no such session or asset.
+        """
+        session = self.get_session(session_id)
+        if session.state != "finalized" or session.final_blob_id is None:
+            raise UploadRejected(
+                f"Upload session {session_id} is not finalized (state {session.state})",
+                reason=UploadRejected.NOT_FINALIZED,
+            )
+        resp = self._http.get(f"/v1/manage/assets/{asset_id}")
+        raise_for_status(resp)
+        asset = Asset.model_validate(resp.json())
+        if asset.blob_id != session.final_blob_id:
+            raise UploadRejected(
+                f"Asset {asset_id} was not created by upload session {session_id}",
+                reason=UploadRejected.ASSET_MISMATCH,
+            )
+        if str(asset.visibility) != str(profile.visibility):
+            raise UploadRejected(
+                f"Asset visibility {asset.visibility} does not match upload profile "
+                f"visibility {profile.visibility}",
+                reason=UploadRejected.VISIBILITY,
+            )
+        profile.verify_asset(asset)
+        return asset
 
     # ── Convenience ────────────────────────────────────────────────────
 
