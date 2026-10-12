@@ -14,6 +14,13 @@ from saas_media_library.migration import (
 from saas_media_library.processing_options import ProcessingOptionsAPI
 from saas_media_library.profiles import UploadProfile
 from saas_media_library.uploads import UploadsAPI
+from saas_media_library.service_uploads import (
+    ClaimedUpload,
+    InMemoryUploadStore,
+    UploadRecord,
+    UploadSessionStore,
+    claim_upload,
+)
 from saas_media_library.models import (
     AssetKind,
     AssetStatus,
@@ -63,6 +70,11 @@ __all__ = [
     "ProcessingOptionsAPI",
     "UploadsAPI",
     "UploadProfile",
+    "ClaimedUpload",
+    "InMemoryUploadStore",
+    "UploadRecord",
+    "UploadSessionStore",
+    "claim_upload",
     "thumbnail_url",
     "find_profile",
     "policy_key",

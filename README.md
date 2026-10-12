@@ -534,7 +534,7 @@ browser's storage). A session can be resumed until it expires.
 ### Uploads from the browser
 
 Large files should go from the browser to the media library directly. Your
-backend still decides; there are three ways to let the browser in.
+backend still decides; there are four ways to let the browser in.
 
 **1. Backend creates the session, a grant covers it.** The backend checks the
 user and the file, creates the session with its service token, and issues an
@@ -580,14 +580,155 @@ grant = client.grants.issue(["upload"], profile=COURSE_COVER, subject=str(user.i
 profiles and your `authorize` callback decides. See
 [Let the browser ask for grants](#let-the-browser-ask-for-grants).
 
+**4. `create_upload_router`.** Way 1 packaged for FastAPI, with the attach
+check included. Recommended when several services share one site: see
+[Uploads started by your backend](#uploads-started-by-your-backend).
+
 In every case the grant does not cover the asset the upload creates. The
-browser sends the `assetId` from finalize to your backend, which checks what
-arrived and stores the reference:
+browser sends the `sessionId` and the `assetId` from finalize to your
+backend, which checks what arrived and stores the reference:
 
 ```python
 finished = client.uploads.upload_file("cover.png", profile=COURSE_COVER)  # stands in for the browser's upload
-COURSE_COVER.verify_asset(client.assets.get(finished.asset_id))  # raises UploadRejected
+asset = client.uploads.verify_upload(finished.session_id, finished.asset_id, profile=COURSE_COVER)
 ```
+
+`verify_upload` raises `UploadRejected` unless the session is finalized, the
+asset's blob is the session's final blob, and the asset has the profile's
+visibility and passes `profile.verify_asset`. It does not check who started
+the session: `claim_upload` (below) does.
+
+### Uploads started by your backend
+
+When several services on the same tenant and the same site let users upload,
+each service starts its own uploads and checks them when they are attached.
+The browser talks to the media library directly, with a grant for one
+session; the service never proxies the file.
+
+1. The browser posts the file's metadata to the service
+   (`POST /api/videos/uploads`). The service checks the file against a named
+   `UploadProfile`, runs its own rule (`can_start`), creates the session with
+   its service token, saves an `UploadRecord` (owner, profile name, context)
+   and returns an `upload` grant for that session only.
+2. The browser uploads the parts and finalizes with the media library. Before
+   the grant expires, it asks the service for a new one.
+3. The browser posts `{sessionId, assetId}` to the service's own attach
+   endpoint. The service calls `claim_upload`, then stores the asset id.
+
+The browser never chooses kind, visibility or processing (the service created
+the session), the grant cannot create other sessions, and nobody can attach
+another user's upload, or one upload twice.
+
+```python
+from saas_media_library import InMemoryUploadStore, UploadRejected, claim_upload
+from saas_media_library.integrations.fastapi import create_upload_router
+
+upload_store = InMemoryUploadStore()  # single process only: use your database in production
+
+def get_current_user():
+    """Your FastAPI auth dependency; see FastAPI integration for a full app."""
+    return user
+
+def can_start(user, request, profile):
+    # request.context is what the browser sent, e.g. {"courseId": "…"}
+    return profile.check_permissions(user.permissions)
+
+upload_router = create_upload_router(
+    client, can_start, get_current_user,
+    profiles={"course-cover": COURSE_COVER},  # keyed by each profile's name
+    store=upload_store,
+    get_owner=lambda user: str(user.id),
+    upload_base_url="https://media.example.com/v1",  # as browsers reach it
+    prefix="/courses/uploads",
+)
+```
+
+The start request body (`StartUploadRequest`):
+
+| Field | JSON key | Type | Notes |
+|---|---|---|---|
+| `mime_type` | `mimeType` | `str` | checked against the profile |
+| `size_bytes` | `sizeBytes` | `int` | checked against the profile, sent as `expected_size_bytes` |
+| `filename` | `filename` | `str` or `None` | sent as `original_filename` |
+| `profile` | `profile` | name of one of `profiles` | optional when there is only one |
+| `context` | `context` | `dict` | your own data, passed to `can_start` and kept in the record |
+
+| Route | Response | When |
+|---|---|---|
+| `POST {prefix}` | 201 `{"sessionId", "grant", "grantId", "scopes", "expiresIn", "expiresAt", "uploadBaseUrl", "tenant", "partSizeBytes"}` | Started |
+| | 413 / 415 / 422 `{"detail", "reason"}` | The profile rejected the file (`reason` as [`UploadRejected.reason`](#uploadrejectedreason)) |
+| | 403 | `can_start` returned a falsy value |
+| | 422 | Unknown profile name, no name with several profiles, or an invalid body |
+| | 502 | The media library failed or could not be reached; a session created before the grant failed is aborted |
+| `POST {prefix}/{session_id}/grant` | 200 `{"sessionId", "grant", "grantId", "scopes", "expiresIn", "expiresAt"}` | A new grant for the same session |
+| | 404 | Unknown session, or another user's |
+| | 409 | The session is already attached |
+
+`ttl_seconds` sets the grants' lifetime (server default 600, at most its
+`GRANT_MAX_TTL`); the browser refreshes before it ends. `upload_base_url`
+defaults to the client's `base_url` + `/v1`: set it when your services reach
+the media library on an internal address. The media library must list your
+site in `CORS_ALLOWED_ORIGINS`.
+
+With the Nuxt module, the browser side is one call:
+
+```ts
+const { upload } = useMLServiceUpload()
+const { sessionId, assetId } = await upload(file, {
+  start: '/api/courses/uploads',
+  body: { profile: 'course-cover', context: { courseId } },
+})
+await $fetch(`/api/courses/${courseId}/cover`, { method: 'PUT', body: { sessionId, assetId } })
+```
+
+The attach endpoint is yours, since only your service knows where the asset
+goes:
+
+```python
+def attach_cover(user, course_id, session_id, asset_id):
+    try:
+        claimed = claim_upload(
+            client, upload_store, session_id, asset_id,
+            owner=str(user.id), profile=COURSE_COVER,
+            # started for this course? checked before anything is attached
+            check_record=lambda record: record.context.get("courseId") == course_id,
+        )
+    except UploadRejected as exc:
+        return 400, {"detail": str(exc), "reason": exc.reason}
+    # save claimed.asset.id as the course's cover here
+    return 200, {"assetId": str(claimed.asset.id)}
+```
+
+`claim_upload` checks, in order:
+
+1. the store has the session, started by `owner` (`UNKNOWN_SESSION`);
+2. it was started for this profile, by name (`PROFILE_MISMATCH`);
+3. `check_record(record)`, when given, accepts it (`CONTEXT_MISMATCH`): use
+   it to compare `record.context` with the request, like the course above;
+4. it is not attached yet (`ALREADY_ATTACHED`);
+5. `client.uploads.verify_upload` (`NOT_FINALIZED`, `ASSET_MISMATCH`,
+   `VISIBILITY`, or a profile reason);
+6. `store.mark_attached` sets the asset, once (`ALREADY_ATTACHED` if another
+   request won).
+
+It returns `ClaimedUpload(record, asset)`.
+
+Blobs are deduplicated per tenant, so `verify_upload` alone would also accept
+another asset with the same bytes. The owner check and attach-once close
+that gap; the user holds those bytes anyway.
+
+**Your store.** `InMemoryUploadStore` loses records on restart and is not
+shared between workers. In production, implement `UploadSessionStore`
+(`save`, `get`, `mark_attached`) on your database. `mark_attached` must be
+atomic and return whether it set the asset:
+
+```sql
+UPDATE upload_records SET attached_asset_id = :asset_id
+WHERE session_id = :session_id AND attached_asset_id IS NULL
+```
+
+Run it in the same transaction as the write that stores the asset id, so a
+failed write does not leave the upload marked attached.
 
 ## Processing options
 
@@ -1220,6 +1361,10 @@ This app serves:
   `can_access` allows;
 - `POST /media/grants`: grants for what `authorize` allows.
 
+A third router, `create_upload_router`, starts browser uploads and
+refreshes their grants: see
+[Uploads started by your backend](#uploads-started-by-your-backend).
+
 ## Handle errors
 
 Every exception the client raises for a media library response inherits from
@@ -1280,8 +1425,16 @@ the wrong type) and `ValueError` (invalid arguments such as too many grants,
 | `UploadRejected.TOO_LARGE` | `too_large` | Above `max_size_bytes` | 413 |
 | `UploadRejected.TOO_SMALL` | `too_small` | Below `min_size_bytes` | 400 |
 | `UploadRejected.KIND` | `kind` | `verify_asset`: the asset's kind differs | 400 |
+| `UploadRejected.NOT_FINALIZED` | `not_finalized` | `verify_upload`: the session is not finalized | 409 |
+| `UploadRejected.ASSET_MISMATCH` | `asset_mismatch` | `verify_upload`: the asset was not made from the session's blob | 400 |
+| `UploadRejected.VISIBILITY` | `visibility` | `verify_upload`: the asset's visibility differs from the profile's | 400 |
+| `UploadRejected.UNKNOWN_SESSION` | `unknown_session` | `claim_upload`: no record of the session, or another owner's | 404 |
+| `UploadRejected.PROFILE_MISMATCH` | `profile_mismatch` | `claim_upload`: the session was started for another profile | 400 |
+| `UploadRejected.CONTEXT_MISMATCH` | `context_mismatch` | `claim_upload`: `check_record` refused the record | 400 |
+| `UploadRejected.ALREADY_ATTACHED` | `already_attached` | `claim_upload`: the session was attached before | 409 |
 
-`UploadRejected.status_code` is `None`: nothing was sent.
+`UploadRejected.status_code` is `None`: the check ran in the client (for
+`verify_upload`, on what the media library returned).
 
 ### 503 "Media grants are not configured"
 
@@ -1703,6 +1856,7 @@ MediaLibraryClient(base_url, tenant_id, token=None, timeout=30.0, http_client=No
 | `finalize(session_id, *, expected_sha256_hex=None)` | `POST BASE/{id}/finalize` | `UploadFinalizeResult` | `ConflictError` (checksum), HTTP errors | Assemble the parts into an asset |
 | `abort(session_id)` | `POST BASE/{id}/abort` | `UploadAbortResult` | HTTP errors | Abort and delete the parts (and the blob of a finalized session) |
 | `upload_file(source, *, profile, mime_type=None, filename=None, collection_name=None, part_size_bytes=None, verify_checksum=True)` | all of the above | `UploadFinalizeResult` | `UploadRejected`, `ValueError`, `MediaLibraryError` (short source), HTTP errors | Validate, upload and finalize a path, bytes or file object |
+| `verify_upload(session_id, asset_id, *, profile)` | `GET BASE/{id}`, `GET /v1/manage/assets/{asset_id}` | `Asset` | `UploadRejected`, HTTP errors | Check that a browser upload's asset came from the session and fits the profile, see [Uploads from the browser](#uploads-from-the-browser) |
 
 ### `ProcessingOptionsAPI` (`client.processing`)
 
@@ -1808,6 +1962,7 @@ camelCase JSON as a `dict`.
 | `find_profile(profiles, resource_type, collection_name=None)` | `UploadProfile` or `None` | — | The profile replacing the policy the server used for that pair |
 | `profiles_from_policies(policies)` | `dict[str, UploadProfile]` | `ValueError` | One profile per resource policy |
 | `render_profiles_module(profiles)` | `str` | — | Python source defining `UPLOAD_PROFILES` |
+| `claim_upload(client, store, session_id, asset_id, *, owner, profile, check_record=None)` | `ClaimedUpload` | `UploadRejected`, HTTP errors | Verify a browser upload and attach it once, see [Uploads started by your backend](#uploads-started-by-your-backend) |
 
 ### `saas_media_library.integrations.fastapi`
 
@@ -1817,9 +1972,24 @@ Needs the `fastapi` extra.
 |---|---|---|
 | `create_media_router(gate, get_current_user, *, prefix="/media")` | `APIRouter` | `POST {prefix}/resolve`, `GET {prefix}/{asset_id}`, see [The media router](#the-media-router) |
 | `create_grant_router(client, authorize, get_current_user, *, profiles=None, get_subject=None, ttl_seconds=None, prefix="/media")` | `APIRouter` | `POST {prefix}/grants`, see [Let the browser ask for grants](#let-the-browser-ask-for-grants) |
+| `create_upload_router(client, can_start, get_current_user, *, profiles, store, get_owner, upload_base_url=None, ttl_seconds=None, prefix="/uploads")` | `APIRouter` | `POST {prefix}` and `POST {prefix}/{session_id}/grant`, see [Uploads started by your backend](#uploads-started-by-your-backend). Raises `ValueError` for no profiles, or a profile whose `name` is not its key |
 | `GrantRequest` | — | The grant router's request body |
+| `StartUploadRequest` | — | The upload router's start body |
 | `ResolveRequest` | — | The media router's resolve body: `asset_ids` (`assetIds`), 1 to 100 UUIDs |
 | `MAX_RESOLVE_IDS` | `100` | Ids per resolve request |
+
+### `saas_media_library.service_uploads`
+
+All exported from the package root. See
+[Uploads started by your backend](#uploads-started-by-your-backend).
+
+| Name | Does |
+|---|---|
+| `UploadRecord(session_id, owner, profile, context={}, created_at=now, attached_asset_id=None)` | Frozen dataclass: who started a session, with which profile (by name) and context |
+| `UploadSessionStore` | Protocol: `save(record)`, `get(session_id)` → record or `None`, `mark_attached(session_id, asset_id)` → `bool` (atomic, once) |
+| `InMemoryUploadStore()` | An `UploadSessionStore` in process memory, thread-safe; tests and single-process development only |
+| `ClaimedUpload(record, asset)` | What `claim_upload` returns: the attached record and the verified `Asset` |
+| `claim_upload(...)` | See [Functions](#functions) |
 
 ### Exceptions
 
