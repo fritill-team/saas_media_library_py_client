@@ -1,8 +1,8 @@
 name: Auto Release saas_media_library (minor)
 
+# Manual only (Actions tab → Run workflow), to save Actions minutes.
 on:
-  push:
-    branches: [ main ]
+  workflow_dispatch:
 
 permissions:
   contents: write
