@@ -17,6 +17,7 @@ from saas_media_library.models import (
     PaginatedAssets,
     PaginatedDeliveryAssets,
     Visibility,
+    WebAppDeployList,
 )
 
 
@@ -129,6 +130,64 @@ class AssetsAPI:
         return BulkVisibilityResult(
             items=data["items"], updated=data["updated"], failed=data["failed"]
         )
+
+    # ── Web-app deploys (rollback) ─────────────────────────────────────
+
+    def list_deploys(
+        self,
+        asset_id: UUID | str,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> WebAppDeployList:
+        """A web app's deploys, newest first (``deleted`` and ``failed`` too).
+
+        GET /v1/manage/assets/{asset_id}/deploys
+
+        ``limit`` is 1 to 200 (the server answers 422 beyond);
+        ``next_offset`` is None on the last page. Needs the ``update`` scope
+        on the asset (service token, trusted admin, or a grant listing it).
+
+        Raises:
+            NotFoundError: ``reason`` is ``asset_not_found`` (unknown or
+                deleted asset) or ``not_a_web_app``.
+        """
+        resp = self._http.get(
+            f"{self.MANAGE_BASE}/{asset_id}/deploys",
+            params={"limit": limit, "offset": offset},
+        )
+        raise_for_status(resp)
+        return WebAppDeployList.model_validate(resp.json())
+
+    def activate_deploy(
+        self,
+        asset_id: UUID | str,
+        deploy_id: UUID | str,
+    ) -> WebAppDeployList:
+        """Make a retained deploy the live one (roll back a web app).
+
+        POST /v1/manage/assets/{asset_id}/deploys/{deploy_id}/activate
+
+        Returns the first page of the deploy list. Nothing is deleted.
+        Activating the live deploy is a no-op. The next page load serves the
+        activated deploy; open pages keep theirs until reloaded. A later
+        reprocess of the asset builds from its newest upload and replaces
+        the rollback. Needs the ``update`` scope on the asset.
+
+        Raises:
+            NotFoundError: ``reason`` is ``asset_not_found``,
+                ``not_a_web_app`` or ``deploy_not_found`` (another asset's
+                deploy).
+            ConflictError: ``reason`` is ``deploy_deleted`` (retired by
+                retention), ``deploy_failed``, ``deploy_uploading``,
+                ``scan_not_allowed`` (its ZIP is not clean) or
+                ``deploy_changed`` (a concurrent deploy; retry).
+        """
+        resp = self._http.post(
+            f"{self.MANAGE_BASE}/{asset_id}/deploys/{deploy_id}/activate"
+        )
+        raise_for_status(resp)
+        return WebAppDeployList.model_validate(resp.json())
 
     # ── Delivery endpoints (public / client-facing) ────────────────────
     # Kept for compatibility; ``client.delivery`` (DeliveryAPI) is the home

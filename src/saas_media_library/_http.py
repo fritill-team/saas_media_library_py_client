@@ -7,6 +7,8 @@ per-API modules (assets, resource_policies, asset_access) that all need
 
 from __future__ import annotations
 
+from typing import Optional
+
 import httpx
 
 from saas_media_library.exceptions import (
@@ -31,16 +33,27 @@ def raise_for_status(response: httpx.Response) -> None:
 
     msg = str(body.get("detail", body) if isinstance(body, dict) else body)
     code = response.status_code
+    reason = _detail_reason(body)
 
     if code == 401 or code == 403:
-        raise AuthenticationError(msg, status_code=code, body=body)
+        raise AuthenticationError(msg, status_code=code, body=body, reason=reason)
     elif code == 404:
-        raise NotFoundError(msg, status_code=code, body=body)
+        raise NotFoundError(msg, status_code=code, body=body, reason=reason)
     elif code == 409:
-        raise ConflictError(msg, status_code=code, body=body)
+        raise ConflictError(msg, status_code=code, body=body, reason=reason)
     elif code == 422:
-        raise ValidationError(msg, status_code=code, body=body)
+        raise ValidationError(msg, status_code=code, body=body, reason=reason)
     elif code >= 500:
-        raise ServerError(msg, status_code=code, body=body)
+        raise ServerError(msg, status_code=code, body=body, reason=reason)
     else:
-        raise MediaLibraryError(msg, status_code=code, body=body)
+        raise MediaLibraryError(msg, status_code=code, body=body, reason=reason)
+
+
+def _detail_reason(body: object) -> Optional[str]:
+    """``detail.reason`` of a ``{"detail": {"reason": …}}`` body, else None."""
+    if not isinstance(body, dict):
+        return None
+    detail = body.get("detail")
+    if isinstance(detail, dict) and isinstance(detail.get("reason"), str):
+        return detail["reason"]
+    return None

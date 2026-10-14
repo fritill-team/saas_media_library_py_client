@@ -55,3 +55,14 @@ def test_restored_exception_can_be_raised_and_caught() -> None:
         raise restored
 
     assert excinfo.value.reason == UploadRejected.TOO_LARGE
+
+
+@pytest.mark.parametrize("round_trip", ROUND_TRIPS, ids=["pickle", "copy", "deepcopy"])
+def test_reason_survives_pickle_and_copy(round_trip) -> None:
+    exc = NotFoundError("gone", status_code=404, body={}, reason="deploy_not_found")
+
+    assert round_trip(exc).reason == "deploy_not_found"
+
+
+def test_reason_defaults_to_none() -> None:
+    assert MediaLibraryError("boom", status_code=500).reason is None

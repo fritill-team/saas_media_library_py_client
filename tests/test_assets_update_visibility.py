@@ -67,3 +67,35 @@ def test_update_visibility_400_raises_validation_error() -> None:
 
     assert excinfo.value.status_code == 400
     assert "PUBLIC" in str(excinfo.value)
+
+
+@respx.mock
+def test_manage_asset_parses_stream_urls() -> None:
+    asset_id = uuid4()
+    body = {**_asset_response(asset_id, "private"), "kind": "video",
+            "hlsUrl": "https://stream.test/s/t/master.m3u8",
+            "dashUrl": "https://stream.test/s/t/manifest.mpd",
+            "streamUrlExpiresIn": 1800}
+    respx.get(f"{BASE_URL}/v1/manage/assets/{asset_id}").mock(
+        return_value=httpx.Response(200, json=body)
+    )
+
+    with _make_client() as client:
+        asset = client.assets.get(asset_id)
+
+    assert asset.hls_url == body["hlsUrl"]
+    assert asset.dash_url == body["dashUrl"]
+    assert asset.stream_url_expires_in == 1800
+
+
+@respx.mock
+def test_manage_asset_stream_urls_default_to_none() -> None:
+    asset_id = uuid4()
+    respx.get(f"{BASE_URL}/v1/manage/assets/{asset_id}").mock(
+        return_value=httpx.Response(200, json=_asset_response(asset_id, "private"))
+    )
+
+    with _make_client() as client:
+        asset = client.assets.get(asset_id)
+
+    assert (asset.hls_url, asset.dash_url, asset.stream_url_expires_in) == (None, None, None)

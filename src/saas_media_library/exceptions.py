@@ -4,17 +4,25 @@ from typing import Any, Optional
 
 
 class MediaLibraryError(Exception):
-    """Base exception for all Media Library client errors."""
+    """Base exception for all Media Library client errors.
+
+    ``reason`` is the response's ``detail.reason`` when the server sends one
+    (e.g. the web-app deploy routes: ``deploy_not_found``,
+    ``deploy_deleted``…), else None.
+    """
 
     def __init__(
         self,
         message: str,
         status_code: Optional[int] = None,
         body: Optional[Any] = None,
+        *,
+        reason: Optional[str] = None,
     ):
         super().__init__(message)
         self.status_code = status_code
         self.body = body
+        self.reason = reason
 
     def __reduce__(self):
         # The default rebuilds with ``cls(*self.args)``, which fails for

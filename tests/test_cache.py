@@ -453,3 +453,73 @@ def test_thread_safety_smoke() -> None:
 
     assert errors == []
     assert len(cache) <= 50
+
+
+# ── Stream URLs (hlsUrl / dashUrl) ─────────────────────────────────────
+
+
+def _with_stream(result: DeliveryBatchResolveResult, expires: Optional[int]) -> DeliveryBatchResolveResult:
+    asset = result.asset.model_copy(update={
+        "hls_url": "https://stream.test/s/t/master.m3u8",
+        "dash_url": "https://stream.test/s/t/manifest.mpd",
+        "stream_url_expires_in": expires,
+    })
+    return result.model_copy(update={"asset": asset})
+
+
+def test_stream_expiry_bounds_the_ttl() -> None:
+    cache = _cache(FakeClock())
+    result = _with_stream(_ok(download_expires=3600, rendition_expires=900), 300)
+
+    assert cache.ttl_for(result) == 300 - 30
+
+
+def test_stream_expiry_alone_bounds_links_without_expiry() -> None:
+    cache = _cache(FakeClock(), default_ttl=600)
+    result = _with_stream(_ok(download_expires=None), 120)
+
+    assert cache.ttl_for(result) == 120 - 30
+
+
+def test_stream_expiring_within_margin_is_not_cached() -> None:
+    cache = _cache(FakeClock())
+    result = _with_stream(_ok(download_expires=3600), 30)
+
+    assert cache.ttl_for(result) is None
+    assert not cache.put(result)
+
+
+@pytest.mark.parametrize("expires", [None, 0])
+def test_stream_without_expiry_does_not_bound_the_ttl(expires) -> None:
+    cache = _cache(FakeClock())
+    result = _with_stream(_ok(download_expires=600), expires)
+
+    assert cache.ttl_for(result) == 600 - 30
+
+
+def test_get_reports_remaining_stream_lifetime() -> None:
+    clock = FakeClock()
+    cache = _cache(clock)
+    result = _with_stream(_ok(download_expires=3600), 600)
+    cache.put(result)
+
+    clock.advance(10.2)
+    asset = cache.get(result.asset_id).asset
+
+    assert asset.stream_url_expires_in == 600 - 11
+    assert asset.download_url_expires_in == 3600 - 11
+    assert asset.hls_url == "https://stream.test/s/t/master.m3u8"
+    assert result.asset.stream_url_expires_in == 600  # stored result untouched
+
+
+def test_results_without_stream_keep_none() -> None:
+    clock = FakeClock()
+    cache = _cache(clock)
+    result = _ok(download_expires=3600)
+    cache.put(result)
+
+    clock.advance(5)
+    asset = cache.get(result.asset_id).asset
+
+    assert asset.hls_url is None and asset.dash_url is None
+    assert asset.stream_url_expires_in is None

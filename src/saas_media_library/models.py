@@ -52,6 +52,22 @@ class ResolveStatus(StrEnum):
     ERROR = "error"          # asset exists but its URL could not be resolved
 
 
+class DownloadType(StrEnum):
+    """How a delivery link is served (``DeliveryAsset.download_type`` and
+    every ``preview_url_type``).
+
+    The fields stay plain ``str`` so a newer server value never breaks
+    parsing; compare them against these values.
+    """
+    PRESIGN = "presign"            # S3 presigned URL (expires)
+    CDN = "cdn"                    # public CDN URL (no expiry)
+    VOLUME_TOKEN = "volume_token"  # volume URL with a signed token (expires)
+    GATE = "gate"                  # R2 object behind the delivery gate: /o/… with a
+                                   # token (expires), or tokenless when the edge may
+                                   # cache it (no expiry); the URL is None when the
+                                   # gate would refuse the object
+
+
 # ── Resource Policy models ─────────────────────────────────────────────
 
 class FileConstraints(BaseModel):
@@ -152,6 +168,12 @@ class Asset(BaseModel):
     # don't return it, and for assets not created by an upload session.
     upload_session_id: Optional[UUID] = Field(None, alias="uploadSessionId")
     renditions: List[Rendition] = Field(default_factory=list)
+    # HLS/DASH entrypoints on the stream Worker, for R2 video/audio with a
+    # ready CMAF rendition, and their token's lifetime in seconds. None from
+    # servers that don't send them, and when there is no stream.
+    hls_url: Optional[str] = Field(None, alias="hlsUrl")
+    dash_url: Optional[str] = Field(None, alias="dashUrl")
+    stream_url_expires_in: Optional[int] = Field(None, alias="streamUrlExpiresIn")
 
     model_config = {"populate_by_name": True}
 
@@ -194,6 +216,12 @@ class DeliveryAsset(BaseModel):
     download_url: Optional[str] = Field(None, alias="downloadUrl")
     download_url_expires_in: Optional[int] = Field(None, alias="downloadUrlExpiresIn")
     renditions: List[DeliveryRendition] = Field(default_factory=list)
+    # HLS/DASH entrypoints on the stream Worker, for R2 video/audio with a
+    # ready CMAF rendition, and their token's lifetime in seconds. None from
+    # servers that don't send them, and when there is no stream.
+    hls_url: Optional[str] = Field(None, alias="hlsUrl")
+    dash_url: Optional[str] = Field(None, alias="dashUrl")
+    stream_url_expires_in: Optional[int] = Field(None, alias="streamUrlExpiresIn")
 
     model_config = {"populate_by_name": True}
 
@@ -220,6 +248,39 @@ class DeliveryBatchResolveResult(BaseModel):
     thumbnail_url: Optional[str] = Field(None, alias="thumbnailUrl")
     asset: Optional[DeliveryAsset] = None
     error: Optional[str] = None
+
+    model_config = {"populate_by_name": True}
+
+
+# ── Web-app deploy models ──────────────────────────────────────────────
+
+class WebAppDeploy(BaseModel):
+    """One deploy of a web app (``GET /manage/assets/{id}/deploys``).
+
+    ``status`` stays a plain ``str`` (``live``, ``ready``, ``uploading``,
+    ``failed``, ``deleted``…) so a newer server status never breaks parsing.
+    """
+    id: UUID
+    status: str
+    created_at: datetime = Field(alias="createdAt")
+    is_live: bool = Field(alias="isLive")
+    blob_id: Optional[UUID] = Field(None, alias="blobId")
+    scan_status: Optional[str] = Field(None, alias="scanStatus")
+    file_count: int = Field(alias="fileCount")
+
+    model_config = {"populate_by_name": True}
+
+
+class WebAppDeployList(BaseModel):
+    """A page of a web app's deploys, newest first.
+
+    ``next_offset`` is None on the last page.
+    """
+    live_deploy_id: Optional[UUID] = Field(None, alias="liveDeployId")
+    deploys: List[WebAppDeploy] = Field(default_factory=list)
+    limit: int
+    offset: int
+    next_offset: Optional[int] = Field(None, alias="nextOffset")
 
     model_config = {"populate_by_name": True}
 

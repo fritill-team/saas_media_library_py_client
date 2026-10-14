@@ -378,3 +378,90 @@ def test_thumbnail_url_is_never_another_link() -> None:
     result = _result_with_renditions(asset_id, [_rendition("hls", "https://media.test/hls?token=secret")])
 
     assert thumbnail_url(result) is None
+
+
+# ── Stream URLs and gate links ─────────────────────────────────────────
+
+
+@respx.mock
+def test_get_parses_stream_urls_and_gate_download_type() -> None:
+    from saas_media_library import DownloadType
+
+    asset_id = uuid4()
+    body = {
+        **_delivery_asset(asset_id),
+        "downloadType": "gate",
+        "downloadUrl": f"https://stream.test/o/{asset_id}/orig.mp4?token=x",
+        "hlsUrl": f"https://stream.test/s/tok/{asset_id}/master.m3u8",
+        "dashUrl": f"https://stream.test/s/tok/{asset_id}/manifest.mpd",
+        "streamUrlExpiresIn": 900,
+        "renditions": [{
+            "id": str(uuid4()), "renditionType": "thumbnail", "status": "ready",
+            "entrypoint": "t.webp", "previewUrl": "https://media.test/o/t.webp",
+            "previewUrlType": "gate", "previewUrlExpiresIn": 0,
+        }],
+    }
+    respx.get(f"{DELIVERY_URL}/{asset_id}").mock(return_value=httpx.Response(200, json=body))
+
+    with _make_client() as client:
+        asset = client.delivery.get(asset_id)
+
+    assert asset.download_type == DownloadType.GATE == "gate"
+    assert asset.renditions[0].preview_url_type == DownloadType.GATE
+    assert asset.hls_url == body["hlsUrl"]
+    assert asset.dash_url == body["dashUrl"]
+    assert asset.stream_url_expires_in == 900
+    dumped = asset.model_dump(mode="json", by_alias=True)
+    assert dumped["hlsUrl"] == body["hlsUrl"] and dumped["streamUrlExpiresIn"] == 900
+
+
+@respx.mock
+def test_gate_download_without_url_parses() -> None:
+    asset_id = uuid4()
+    body = {**_delivery_asset(asset_id), "downloadType": "gate",
+            "downloadUrl": None, "downloadUrlExpiresIn": 0}
+    respx.get(f"{DELIVERY_URL}/{asset_id}").mock(return_value=httpx.Response(200, json=body))
+
+    with _make_client() as client:
+        asset = client.delivery.get(asset_id)
+
+    assert asset.download_type == "gate"
+    assert asset.download_url is None
+
+
+@respx.mock
+def test_stream_fields_default_to_none() -> None:
+    asset_id = uuid4()
+    respx.get(f"{DELIVERY_URL}/{asset_id}").mock(
+        return_value=httpx.Response(200, json=_delivery_asset(asset_id))
+    )
+
+    with _make_client() as client:
+        asset = client.delivery.get(asset_id)
+
+    assert asset.hls_url is None
+    assert asset.dash_url is None
+    assert asset.stream_url_expires_in is None
+
+
+@respx.mock
+def test_resolve_items_carry_stream_urls() -> None:
+    asset_id = uuid4()
+    asset = {**_delivery_asset(asset_id), "hlsUrl": "https://stream.test/h.m3u8",
+             "dashUrl": None, "streamUrlExpiresIn": 600}
+    respx.post(f"{DELIVERY_URL}/resolve").mock(return_value=httpx.Response(200, json={
+        "items": [{"assetId": str(asset_id), "status": "ok", "asset": asset}], "total": 1,
+    }))
+
+    with _make_client() as client:
+        [item] = client.delivery.resolve([asset_id])
+
+    assert item.asset.hls_url == "https://stream.test/h.m3u8"
+    assert item.asset.dash_url is None
+    assert item.asset.stream_url_expires_in == 600
+
+
+def test_download_type_values() -> None:
+    from saas_media_library import DownloadType
+
+    assert [t.value for t in DownloadType] == ["presign", "cdn", "volume_token", "gate"]

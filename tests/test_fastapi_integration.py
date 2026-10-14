@@ -32,6 +32,9 @@ def _asset_json(asset_id) -> dict:
         "downloadType": "presign",
         "downloadUrl": f"https://s3.test/{asset_id}.pdf?sig=secret",
         "downloadUrlExpiresIn": 3600,
+        "hlsUrl": None,
+        "dashUrl": None,
+        "streamUrlExpiresIn": None,
         "renditions": [
             {
                 "id": str(uuid5(NAMESPACE_URL, f"{asset_id}/pdf_preview")),

@@ -33,6 +33,8 @@ SECRET_URLS = (
     "https://media.test/hls/{id}/720p.m3u8?token=v720",
     "https://media.test/hls/{id}/1080p.m3u8?token=v1080",
     "https://media.test/s3/{id}/preview.mp4?sig=preview",
+    "https://stream.test/s/stoken/{id}/master.m3u8",
+    "https://stream.test/s/stoken/{id}/manifest.mpd",
 )
 
 
@@ -41,7 +43,9 @@ def _make_client() -> MediaLibraryClient:
 
 
 def _asset_json(asset_id, *, thumbnail: bool = True) -> dict:
-    download, hls, v720, v1080, preview = (u.format(id=asset_id) for u in SECRET_URLS)
+    download, hls, v720, v1080, preview, stream_hls, stream_dash = (
+        u.format(id=asset_id) for u in SECRET_URLS
+    )
     renditions = [
         {
             "id": str(uuid4()),
@@ -100,6 +104,9 @@ def _asset_json(asset_id, *, thumbnail: bool = True) -> dict:
         "downloadType": "volume_token",
         "downloadUrl": download,
         "downloadUrlExpiresIn": 3600,
+        "hlsUrl": stream_hls,
+        "dashUrl": stream_dash,
+        "streamUrlExpiresIn": 3600,
         "renditions": renditions,
     }
 

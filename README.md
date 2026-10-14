@@ -827,9 +827,11 @@ other keys with `.get()` if you may talk to an older server.
 
 ## Manage assets
 
-`client.assets` reads, lists and deletes assets and changes their
-visibility (`/v1/manage/assets`). Its models carry metadata only, no links:
-get links from [`client.delivery`](#get-delivery-links).
+`client.assets` reads, lists and deletes assets, changes their
+visibility and rolls back web apps (`/v1/manage/assets`). Its models carry
+metadata, plus the HLS/DASH stream URLs when the server sends them (see
+[Stream URLs](#stream-urls)); get download and preview links from
+[`client.delivery`](#get-delivery-links).
 
 ```python
 asset = client.assets.get(result.asset_id)
@@ -879,14 +881,65 @@ The server accepts 1 to 500 ids.
   never limited.
 - After changing an asset, `invalidate` it in any `AssetUrlCache`.
 
+### Roll back a web app
+
+A web app (`kind="web_app"`) keeps its recent deploys. List them and make an
+older one live again:
+
+```python
+page = client.assets.list_deploys(app_id, limit=50, offset=0)
+print(page.live_deploy_id, page.next_offset)
+for deploy in page.deploys:  # newest first, `deleted` and `failed` too
+    print(deploy.id, deploy.status, deploy.is_live, deploy.scan_status, deploy.file_count)
+
+page = client.assets.activate_deploy(app_id, previous_deploy_id)
+assert page.live_deploy_id == previous_deploy_id
+```
+
+- `list_deploys(asset_id, *, limit=50, offset=0)` returns a
+  `WebAppDeployList`. `limit` is 1 to 200; `next_offset` is `None` on the
+  last page.
+- `activate_deploy(asset_id, deploy_id)` makes a retained deploy the live
+  one and returns the first page of the list. Nothing is deleted.
+  Activating the live deploy is a no-op. The target must be `ready`, and
+  its ZIP's scan status one the gate serves (`clean`, `legacy_unscanned`,
+  `skipped_too_large`).
+- Both need the `update` scope on the asset: a service token, a trusted
+  admin, or a grant with `update` listing the asset.
+- The next page load serves the activated deploy; pages already open keep
+  theirs until reloaded.
+- A reprocess of the asset builds a new deploy from its newest upload, which
+  goes live and replaces the rollback. To fix the app, upload a corrected
+  ZIP. A deploy retired by retention can no longer be activated.
+
+Refusals raise `NotFoundError` (404) or `ConflictError` (409) with the
+server's `detail.reason` in `exc.reason`:
+
+| Status | `exc.reason` | When |
+|---|---|---|
+| 404 | `asset_not_found`, `not_a_web_app`, `deploy_not_found` | Unknown or deleted asset, not a web app, another asset's deploy |
+| 409 | `deploy_deleted`, `deploy_failed`, `deploy_uploading` | The target can't be served (`deleted`: retired by retention) |
+| 409 | `scan_not_allowed` | The target's ZIP is `pending`, `infected` or unknown |
+| 409 | `deploy_changed` | A concurrent deploy changed the rows: retry |
+
+```python
+from saas_media_library import ConflictError
+
+try:
+    client.assets.activate_deploy(app_id, deploy_id)
+except ConflictError as exc:
+    if exc.reason == "deploy_changed":
+        ...  # retry
+```
+
 ### When previews are withheld
 
 The server's `/manage` responses also carry preview links. With
 `MANAGE_RESTRICTED_PREVIEWS_PRIVILEGED_ONLY=true`, a `restricted` asset's
 preview links are `null` for callers that are not privileged (thumbnails
-excepted). This client's manage models do not expose preview links at all,
-so this only matters if you read the raw responses: use `client.delivery`
-for links.
+excepted). This client's manage models do not expose preview links at all
+(only the stream URLs), so this only matters if you read the raw responses:
+use `client.delivery` for links.
 
 ## Get delivery links
 
@@ -945,13 +998,44 @@ for item in items:
     print(thumbnail_url(item))
 ```
 
+### Download types
+
+`DeliveryAsset.download_type` and every `preview_url_type` are plain `str`
+(so a newer server value never breaks parsing). Compare them with
+`DownloadType`:
+
+| `DownloadType` | Value | Link |
+|---|---|---|
+| `PRESIGN` | `"presign"` | S3 presigned URL; expires |
+| `CDN` | `"cdn"` | Public CDN URL; does not expire |
+| `VOLUME_TOKEN` | `"volume_token"` | Volume URL with a signed token; expires |
+| `GATE` | `"gate"` | R2 object behind the delivery gate (`/o/…`): with a token (expires), or without one for public objects the edge may cache (does not expire). The URL is `None` when the gate would refuse the object (for example a file not yet scanned) |
+
+### Stream URLs
+
+For video and audio stored on R2 with a ready CMAF rendition, the server
+also returns HLS and DASH entrypoints on its stream host, on both
+`DeliveryAsset` and the manage `Asset`:
+
+```python
+asset = client.delivery.get(video_id)
+if asset.hls_url:
+    player_src = asset.hls_url        # or asset.dash_url
+    ttl = asset.stream_url_expires_in  # seconds
+```
+
+`hls_url`, `dash_url` and `stream_url_expires_in` are `None` from servers
+that don't send them, for assets without a stream, and when the server could
+not mint the stream token. Both URLs share one token and one lifetime.
+
 ### Link expiry
 
 Links are bound to the file, not to the user who asked. Each link comes with
-its lifetime in seconds: `download_url_expires_in` on the asset and
-`preview_url_expires_in` on each rendition and variant. `None` or `0` means
-the link does not expire (CDN links). Cache one link per asset, not per user,
-until shortly before it expires.
+its lifetime in seconds: `download_url_expires_in` and
+`stream_url_expires_in` on the asset and `preview_url_expires_in` on each
+rendition and variant. `None` or `0` means the link does not expire (CDN
+links). Cache one link per asset, not per user, until shortly before it
+expires.
 
 ### Cache links with `AssetUrlCache`
 
@@ -983,8 +1067,8 @@ Rules:
   `clear()` the cache if you `set_token` to a different principal.
 - Only `ok` results for `ready` assets are cached. `not_found`, `forbidden`,
   `error` and assets still processing are always asked again.
-- An entry lives until the shortest of its links (download URL, rendition and
-  variant previews) expires, minus `safety_margin`. Results whose links expire
+- An entry lives until the shortest of its links (download URL, stream
+  URLs, rendition and variant previews) expires, minus `safety_margin`. Results whose links expire
   within the margin are not cached. Entries whose links never expire live
   `default_ttl` seconds.
 - Entries returned by `get`/`resolve` report the time their links have left:
@@ -1171,7 +1255,7 @@ request gets 401.
 | `GrantScope` | Value | Allows | Needs |
 |---|---|---|---|
 | `READ` | `read` | `GET /manage/assets/{id}`, `POST /manage/assets/resolve`, the asset's renditions and processing tasks; `/delivery` for the listed assets | `asset_ids` |
-| `UPDATE` | `update` | `PATCH /manage/assets/{id}`, `POST /manage/assets/bulk-visibility` | `asset_ids` |
+| `UPDATE` | `update` | `PATCH /manage/assets/{id}`, `POST /manage/assets/bulk-visibility`, `GET /manage/assets/{id}/deploys`, `POST /manage/assets/{id}/deploys/{deploy_id}/activate` | `asset_ids` |
 | `DELETE` | `delete` | `DELETE /manage/assets/{id}` | `asset_ids` |
 | `PROCESS` | `process` | Start processing, configure and retry tasks of the asset | `asset_ids` |
 | `RENDITIONS` | `renditions` | `POST /manage/assets/{id}/renditions/*` | `asset_ids` |
@@ -1418,7 +1502,7 @@ Every exception the client raises for a media library response inherits from
 `MediaLibraryError`:
 
 ```
-MediaLibraryError            status_code, body
+MediaLibraryError            status_code, body, reason
 ├── AuthenticationError      401, 403
 ├── NotFoundError            404
 ├── ConflictError            409
@@ -1428,7 +1512,10 @@ MediaLibraryError            status_code, body
 ```
 
 All of them carry `status_code` (the HTTP status, or `None`) and `body` (the
-parsed JSON body, or its text). The message is the response's `detail`. They
+parsed JSON body, or its text). The message is the response's `detail`.
+`reason` is the response's `detail.reason` when the server sends one (for
+example the [web-app deploy](#roll-back-a-web-app) routes), else `None`;
+`UploadRejected` sets its own. They
 survive pickling, for example across process pools.
 
 | HTTP status | Exception |
@@ -1621,6 +1708,7 @@ All enums are `str` enums: they compare equal to their values.
 | `AssetStatus` | `pending`, `uploaded`, `processing`, `awaiting_input`, `ready`, `failed`, `archived`, `deleted` |
 | `Visibility` | `restricted`, `private`, `public` |
 | `ResolveStatus` | `ok`, `not_found`, `forbidden`, `error` |
+| `DownloadType` | `presign`, `cdn`, `volume_token`, `gate` |
 | `GrantScope` | `upload`, `read`, `update`, `delete`, `process`, `renditions`, `manage:*` |
 
 ### Manage models
@@ -1643,6 +1731,9 @@ All enums are `str` enums: they compare equal to their values.
 | `resource_policy_id` | `resourcePolicyId` | `UUID` | `None` |
 | `upload_session_id` | `uploadSessionId` | `UUID` | `None` |
 | `renditions` | `renditions` | `List[Rendition]` | `[]` |
+| `hls_url` | `hlsUrl` | `str` | `None` |
+| `dash_url` | `dashUrl` | `str` | `None` |
+| `stream_url_expires_in` | `streamUrlExpiresIn` | `int` | `None` |
 
 #### `Rendition`
 
@@ -1695,6 +1786,28 @@ All enums are `str` enums: they compare equal to their values.
 | `page` | `page` | `int` | required |
 | `page_size` | `pageSize` | `int` | required |
 
+#### `WebAppDeployList`
+
+| Field | JSON key | Type | Default |
+|---|---|---|---|
+| `live_deploy_id` | `liveDeployId` | `UUID` | `None` |
+| `deploys` | `deploys` | `List[WebAppDeploy]` | `[]` |
+| `limit` | `limit` | `int` | required |
+| `offset` | `offset` | `int` | required |
+| `next_offset` | `nextOffset` | `int` | `None` |
+
+#### `WebAppDeploy`
+
+| Field | JSON key | Type | Default |
+|---|---|---|---|
+| `id` | `id` | `UUID` | required |
+| `status` | `status` | `str` (`uploading`, `ready`, `live`, `failed`, `deleted`) | required |
+| `created_at` | `createdAt` | `datetime` | required |
+| `is_live` | `isLive` | `bool` | required |
+| `blob_id` | `blobId` | `UUID` | `None` |
+| `scan_status` | `scanStatus` | `str` | `None` |
+| `file_count` | `fileCount` | `int` | required |
+
 ### Delivery models
 
 #### `DeliveryAsset`
@@ -1711,6 +1824,9 @@ All enums are `str` enums: they compare equal to their values.
 | `download_url` | `downloadUrl` | `str` | `None` |
 | `download_url_expires_in` | `downloadUrlExpiresIn` | `int` | `None` |
 | `renditions` | `renditions` | `List[DeliveryRendition]` | `[]` |
+| `hls_url` | `hlsUrl` | `str` | `None` |
+| `dash_url` | `dashUrl` | `str` | `None` |
+| `stream_url_expires_in` | `streamUrlExpiresIn` | `int` | `None` |
 
 #### `DeliveryRendition`
 
@@ -1927,6 +2043,8 @@ MediaLibraryClient(base_url, tenant_id, token=None, timeout=30.0, http_client=No
 | `delete(asset_id)` | `DELETE MANAGE_BASE/{id}` | `None` | `NotFoundError`, HTTP errors | Delete an asset and its records |
 | `update_visibility(asset_id, visibility)` | `PATCH MANAGE_BASE/{id}` | `Asset` | `AuthenticationError` (403), `MediaLibraryError` (400), HTTP errors | Change one asset's visibility |
 | `bulk_update_visibility(asset_ids, visibility)` | `POST MANAGE_BASE/bulk-visibility` | `BulkVisibilityResult` | HTTP errors | Change visibility of up to 500 assets |
+| `list_deploys(asset_id, *, limit=50, offset=0)` | `GET MANAGE_BASE/{id}/deploys` | `WebAppDeployList` | `NotFoundError`, HTTP errors | A web app's deploys, newest first |
+| `activate_deploy(asset_id, deploy_id)` | `POST MANAGE_BASE/{id}/deploys/{deploy_id}/activate` | `WebAppDeployList` | `NotFoundError`, `ConflictError` (with `reason`), HTTP errors | Roll back a web app to a retained deploy |
 | `delivery_list(...)`, `delivery_get(asset_id)`, `delivery_resolve(asset_ids)` | as `client.delivery` | as `client.delivery` | as `client.delivery` | Kept for compatibility; call `client.delivery` (without `grants`/`cache`) |
 
 ### `DeliveryAPI` (`client.delivery`)
@@ -2041,7 +2159,7 @@ All exported from the package root. See
 
 ### Exceptions
 
-`MediaLibraryError(message, status_code=None, body=None)`,
+`MediaLibraryError(message, status_code=None, body=None, *, reason=None)`,
 `NotFoundError`, `AuthenticationError`, `ValidationError`, `ConflictError`,
 `ServerError` and `UploadRejected(message, *, reason)`. See
 [Handle errors](#handle-errors).
@@ -2236,6 +2354,9 @@ resource-policy retirement release, see the server's
 | `client.grants`, `create_grant_router` | `POST /manage/grants` and `GRANT_SIGNING_SECRET` | `NotFoundError` (404); 503 without the secret |
 | `delivery.resolve(grants=)` / `get(grants=)` | `X-Media-Grants` on `/delivery` | The header is ignored: assets a grant should cover come back `forbidden` |
 | `AccessGate`, `restricted` links with a service token | Service tokens resolve `restricted` assets | Items come back `forbidden` |
+| `hls_url`, `dash_url`, `stream_url_expires_in` | Stream URLs on resolve (and `STREAM_BASE_URL` set) | The fields are `None` |
+| `download_type == "gate"` | R2 storage behind the delivery gate | Not sent; other types only |
+| `assets.list_deploys`, `assets.activate_deploy` | Web-app rollback routes | `NotFoundError` (404) with `reason` `None` |
 
 Server settings that change what callers see, all off by default:
 

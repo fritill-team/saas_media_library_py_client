@@ -43,8 +43,8 @@ class AssetUrlCache:
 
     An entry lives until its shortest link expires, minus ``safety_margin``
     seconds (request latency, clock skew, and time for the browser to start
-    the download). "Its links" are the download URL and every rendition and
-    variant preview URL. Entries without any expiry (CDN links) live for
+    the download). "Its links" are the download URL, the HLS/DASH stream URLs
+    (``stream_url_expires_in``) and every rendition and variant preview URL. Entries without any expiry (CDN links) live for
     ``default_ttl`` seconds. A result whose links expire within the margin is
     not cached.
 
@@ -261,7 +261,7 @@ def _tenant(tenant_id: Optional[str]) -> Optional[str]:
 
 def _link_expiries(asset: DeliveryAsset) -> List[int]:
     """Every positive ``*_expires_in`` of an asset's links (0 or None: no expiry)."""
-    values = [asset.download_url_expires_in]
+    values = [asset.download_url_expires_in, asset.stream_url_expires_in]
     for rendition in asset.renditions:
         values.append(rendition.preview_url_expires_in)
         values.extend(v.preview_url_expires_in for v in rendition.variants)
@@ -296,6 +296,7 @@ def _with_remaining_expiry(
     ]
     asset = asset.model_copy(update={
         "download_url_expires_in": left(asset.download_url_expires_in),
+        "stream_url_expires_in": left(asset.stream_url_expires_in),
         "renditions": renditions,
     })
     return result.model_copy(update={"asset": asset})
