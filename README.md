@@ -666,6 +666,11 @@ The start request body (`StartUploadRequest`):
 | `POST {prefix}/{session_id}/grant` | 200 `{"sessionId", "grant", "grantId", "scopes", "expiresIn", "expiresAt"}` | A new grant for the same session |
 | | 404 | Unknown session, or another user's |
 | | 409 | The session is already attached |
+| `POST {prefix}/{session_id}/attach` (with `on_attach`) | 200 `{"sessionId", "assetId"}` plus what `on_attach` returns | `claim_upload` passed and `on_attach` stored the asset |
+| | 404 | Unknown session, another user's, or the media library has no such session or asset |
+| | 403 `{"detail", "reason"}` | `check_attach` refused it (`CONTEXT_MISMATCH`) |
+| | 409 `{"detail", "reason"}` | Already attached, or `profile` is not the session's |
+| | 422 `{"detail", "reason"}` | The upload failed the check (`NOT_FINALIZED`, `ASSET_MISMATCH`, `VISIBILITY`…), or an unknown profile name |
 
 `ttl_seconds` sets the grants' lifetime (server default 600, at most its
 `GRANT_MAX_TTL`); the browser refreshes before it ends.
@@ -693,8 +698,36 @@ const { sessionId, assetId } = await upload(file, {
 await $fetch(`/api/courses/${courseId}/cover`, { method: 'PUT', body: { sessionId, assetId } })
 ```
 
-The attach endpoint is yours, since only your service knows where the asset
-goes:
+**Attach.** Pass `on_attach` and the router adds
+`POST {prefix}/{session_id}/attach` with `{"assetId", "profile"}`
+(`profile` optional; when sent it must be the session's). It calls
+`claim_upload` with the session's profile and owner, then
+`on_attach(user, claimed)`, where you store the asset id;
+`claimed.record.context` is what the start request sent, so it says where
+the asset goes. `check_attach(user, record)` runs before anything is
+attached, e.g. that the user may still edit that course:
+
+```python
+upload_router = create_upload_router(
+    client, can_start, get_current_user,
+    profiles={"course-cover": COURSE_COVER},
+    store=upload_store,
+    get_owner=lambda user: str(user.id),
+    prefix="/courses/uploads",
+    check_attach=lambda user, record: user.can_edit_course(record.context.get("courseId")),
+    on_attach=lambda user, claimed: set_course_cover(
+        claimed.record.context["courseId"], claimed.asset.id,
+    ),  # may return a dict; it is merged into the 200 response
+)
+```
+
+`on_attach` runs after `store.mark_attached`. With a database store, run
+both in the request's transaction so a failed `on_attach` leaves the
+session unattached. This is the route the Nuxt module's upload tray calls
+for files whose page was left before they finished.
+
+Or write the attach endpoint yourself, e.g. when the asset id comes in with
+other data (`PUT /courses/{id}` with the cover's `sessionId` and `assetId`):
 
 ```python
 def attach_cover(user, course_id, session_id, asset_id):

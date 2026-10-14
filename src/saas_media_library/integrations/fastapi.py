@@ -22,12 +22,12 @@ except ImportError as exc:  # pragma: no cover - depends on the environment
 import httpx
 from pydantic import BaseModel, Field
 
-from saas_media_library.exceptions import MediaLibraryError, UploadRejected, ValidationError
+from saas_media_library.exceptions import MediaLibraryError, NotFoundError, UploadRejected, ValidationError
 from saas_media_library.gate import AccessGate
 from saas_media_library.grants import GrantScope
 from saas_media_library.profiles import UploadProfile
 from saas_media_library.models import ResolveStatus
-from saas_media_library.service_uploads import UploadRecord, UploadSessionStore
+from saas_media_library.service_uploads import ClaimedUpload, UploadRecord, UploadSessionStore, claim_upload
 
 logger = logging.getLogger(__name__)
 
@@ -213,7 +213,24 @@ class StartUploadRequest(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class AttachUploadRequest(BaseModel):
+    """Body of ``POST {prefix}/{session_id}/attach``: the asset the
+    session's finalize returned. ``profile``, when sent, must be the one the
+    session was started with."""
+
+    asset_id: UUID = Field(..., alias="assetId")
+    profile: Optional[str] = Field(None, max_length=255)
+
+    model_config = {"populate_by_name": True}
+
+
 _REJECTED_STATUS = {UploadRejected.MIME_TYPE: 415, UploadRejected.TOO_LARGE: 413}
+_ATTACH_REJECTED_STATUS = {
+    UploadRejected.UNKNOWN_SESSION: 404,
+    UploadRejected.CONTEXT_MISMATCH: 403,
+    UploadRejected.PROFILE_MISMATCH: 409,
+    UploadRejected.ALREADY_ATTACHED: 409,
+}
 
 
 def create_upload_router(
@@ -227,6 +244,8 @@ def create_upload_router(
     upload_base_url: Optional[str] = None,
     ttl_seconds: Optional[int] = None,
     prefix: str = "/uploads",
+    on_attach: Optional[Callable[[Any, ClaimedUpload], Optional[Mapping[str, Any]]]] = None,
+    check_attach: Optional[Callable[[Any, UploadRecord], bool]] = None,
 ) -> APIRouter:
     """Start browser uploads that go directly to the media library.
 
@@ -243,14 +262,25 @@ def create_upload_router(
       ``expiresAt``). 200 with ``{"sessionId", "grant", "grantId",
       "expiresIn", "expiresAt"}``; 404 for an unknown session or another
       user's; 409 once attached.
+    - ``POST {prefix}/{session_id}/attach`` with ``{"assetId", "profile"}``
+      (only when ``on_attach`` is given): ``claim_upload`` with the
+      session's profile, then ``on_attach(user, claimed)``, where the app
+      stores ``claimed.asset.id`` (``claimed.record.context`` says where).
+      200 ``{"sessionId", "assetId"}`` plus whatever mapping ``on_attach``
+      returns. 404 for an unknown session or another user's (or one the
+      media library does not have); 403 when ``check_attach(user, record)``
+      refuses it; 409 once attached, or for another ``profile``; 422
+      ``{"detail", "reason"}`` when the upload fails the check (not
+      finalized, another session's asset, visibility…).
 
     The browser sends ``Authorization: Bearer <grant>`` and ``X-Tenant:
     <tenant>`` to ``{upload base}/manage/uploads/sessions/{sessionId}/…``,
     where the upload base is the frontend's choice (the Nuxt module's
     ``mediaLibrary.serviceUploads``: the public media library, or its
     same-origin pass-through route),
-    then posts ``{sessionId, assetId}`` to the app's own attach endpoint,
-    which calls ``service_uploads.claim_upload``.
+    then posts ``{assetId}`` to ``{prefix}/{session_id}/attach`` (with
+    ``on_attach``), or ``{sessionId, assetId}`` to an attach endpoint of the
+    app's own that calls ``service_uploads.claim_upload``.
 
     ``client`` must be a ``MediaLibraryClient`` with the tenant's **service
     token**. ``profiles`` maps the names the browser may send to profiles;
@@ -262,6 +292,12 @@ def create_upload_router(
     The client's own ``base_url`` is a server-side address and is never
     sent to browsers. ``ttl_seconds`` is the grants' lifetime (server
     default 600, at most its ``GRANT_MAX_TTL``).
+
+    ``on_attach`` runs after ``store.mark_attached``: with a database store,
+    run both in the request's transaction so a failed ``on_attach`` leaves
+    the session unattached. ``check_attach(user, record)`` runs before
+    anything is attached, e.g. that ``record.context["courseId"]`` is a
+    course the user may still edit.
 
     Other responses: 403 when ``can_start`` refuses; 413 / 415 / 422 when
     the profile rejects the file (``{"detail", "reason"}``, ``reason`` as
@@ -280,8 +316,9 @@ def create_upload_router(
             profiles={"course-cover": COURSE_COVER},
             store=store,
             get_owner=lambda user: str(user.id),
-            upload_base_url="https://media.example.com/v1",
             prefix="/courses/uploads",
+            on_attach=lambda user, claimed: set_course_cover(
+                claimed.record.context["courseId"], claimed.asset.id),
         ))
     """
     known = dict(profiles)
@@ -366,6 +403,39 @@ def create_upload_router(
         if record.attached_asset_id is not None:
             raise HTTPException(status_code=409, detail="Upload session is already attached")
         return issue(session_id, user)
+
+    if on_attach is None:
+        return router
+
+    @router.post("/{session_id}/attach", response_model=None)
+    def attach_upload(
+        session_id: UUID,
+        payload: AttachUploadRequest,
+        user: Any = Depends(get_current_user),
+    ) -> Any:
+        owner = get_owner(user)
+        record = store.get(session_id)
+        if record is None or record.owner != owner:
+            raise HTTPException(status_code=404, detail=f"Upload session {session_id} not found")
+        profile = known.get(payload.profile or record.profile)
+        if profile is None:
+            raise HTTPException(status_code=422, detail=f"Unknown upload profile {payload.profile!r}")
+        check = (lambda r: check_attach(user, r)) if check_attach is not None else None
+        with _upload_errors():
+            try:
+                claimed = claim_upload(
+                    client, store, session_id, payload.asset_id,
+                    owner=owner, profile=profile, check_record=check,
+                )
+            except UploadRejected as exc:
+                return JSONResponse(
+                    status_code=_ATTACH_REJECTED_STATUS.get(exc.reason, 422),
+                    content={"detail": str(exc), "reason": exc.reason},
+                )
+            except NotFoundError as exc:
+                raise HTTPException(status_code=404, detail="Upload session or asset not found") from exc
+        extra = on_attach(user, claimed) or {}
+        return {**extra, "sessionId": str(session_id), "assetId": str(claimed.asset.id)}
 
     return router
 

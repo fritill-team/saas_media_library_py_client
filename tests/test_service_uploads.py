@@ -523,3 +523,107 @@ def test_router_profiles_must_be_named_by_their_key() -> None:
         _app(profiles={"cover": COVER})
     with pytest.raises(ValueError):
         _app(profiles={})
+
+
+# ── create_upload_router: attach ──────────────────────────────────────
+
+
+def _attach_app(store, **kwargs):
+    attached = []
+
+    def on_attach(user, claimed):
+        attached.append((user, claimed))
+        return {"courseId": claimed.record.context.get("courseId")}
+
+    http, _, _ = _app(store, on_attach=on_attach, **kwargs)
+    return http, attached
+
+
+@respx.mock(assert_all_called=False)
+def test_attach_claims_the_upload_and_calls_the_app(respx_mock) -> None:
+    session_id, asset_id = uuid4(), uuid4()
+    _mock_upload(respx_mock, session_id, asset_id, upload_session_id=session_id)
+    store = _store_with(session_id, context={"courseId": "c1"})
+    http, attached = _attach_app(store)
+
+    resp = http.post(f"/uploads/{session_id}/attach", json={"assetId": str(asset_id)}, headers={"X-User": "alice"})
+
+    assert resp.status_code == 200
+    assert resp.json() == {"courseId": "c1", "sessionId": str(session_id), "assetId": str(asset_id)}
+    user, claimed = attached[0]
+    assert user.id == "u1" and claimed.asset.id == asset_id
+    assert store.get(session_id).attached_asset_id == asset_id
+
+
+@respx.mock(assert_all_called=False)
+def test_attach_twice_is_409(respx_mock) -> None:
+    session_id, asset_id = uuid4(), uuid4()
+    _mock_upload(respx_mock, session_id, asset_id, upload_session_id=session_id)
+    http, attached = _attach_app(_store_with(session_id))
+    body = {"assetId": str(asset_id), "profile": "course-cover"}
+
+    assert http.post(f"/uploads/{session_id}/attach", json=body, headers={"X-User": "alice"}).status_code == 200
+    again = http.post(f"/uploads/{session_id}/attach", json=body, headers={"X-User": "alice"})
+
+    assert again.status_code == 409
+    assert again.json()["reason"] == UploadRejected.ALREADY_ATTACHED
+    assert len(attached) == 1
+
+
+@respx.mock(assert_all_called=False)
+def test_attach_refuses_before_calling_the_media_library(respx_mock) -> None:
+    session_id = uuid4()
+    route = respx_mock.route(host="media.test")
+    store = _store_with(session_id, context={"courseId": "c1"})
+    http, attached = _attach_app(
+        store,
+        profiles={"course-cover": COVER, "avatar": AVATAR},
+        check_attach=lambda user, record: record.context.get("courseId") == "c2",
+    )
+    url = f"/uploads/{session_id}/attach"
+    body = {"assetId": str(uuid4())}
+
+    assert http.post(url, json=body, headers={"X-User": "bob"}).status_code == 404
+    assert http.post(f"/uploads/{uuid4()}/attach", json=body, headers={"X-User": "alice"}).status_code == 404
+    assert http.post(url, json={**body, "profile": "banner"}, headers={"X-User": "alice"}).status_code == 422
+    other = http.post(url, json={**body, "profile": "avatar"}, headers={"X-User": "alice"})
+    assert other.status_code == 409 and other.json()["reason"] == UploadRejected.PROFILE_MISMATCH
+    refused = http.post(url, json=body, headers={"X-User": "alice"})
+    assert refused.status_code == 403 and refused.json()["reason"] == UploadRejected.CONTEXT_MISMATCH
+
+    assert not route.called and not attached
+    assert store.get(session_id).attached_asset_id is None
+
+
+@respx.mock(assert_all_called=False)
+def test_attach_rejects_an_unfinished_upload(respx_mock) -> None:
+    session_id, asset_id = uuid4(), uuid4()
+    _mock_upload(respx_mock, session_id, asset_id, state="uploading")
+    store = _store_with(session_id)
+    http, attached = _attach_app(store)
+
+    resp = http.post(f"/uploads/{session_id}/attach", json={"assetId": str(asset_id)}, headers={"X-User": "alice"})
+
+    assert resp.status_code == 422
+    assert resp.json()["reason"] == UploadRejected.NOT_FINALIZED
+    assert not attached and store.get(session_id).attached_asset_id is None
+
+
+@respx.mock(assert_all_called=False)
+def test_attach_unknown_asset_is_404(respx_mock) -> None:
+    session_id, asset_id = uuid4(), uuid4()
+    respx_mock.get(f"{SESSIONS_URL}/{session_id}").mock(
+        return_value=httpx.Response(200, json=_session_json(session_id, final_blob_id=uuid4()))
+    )
+    respx_mock.get(f"{ASSETS_URL}/{asset_id}").mock(return_value=httpx.Response(404, json={"detail": "nope"}))
+    http, _ = _attach_app(_store_with(session_id))
+
+    resp = http.post(f"/uploads/{session_id}/attach", json={"assetId": str(asset_id)}, headers={"X-User": "alice"})
+
+    assert resp.status_code == 404
+
+
+def test_no_attach_route_without_on_attach() -> None:
+    http, _, _ = _app()
+    resp = http.post(f"/uploads/{uuid4()}/attach", json={"assetId": str(uuid4())}, headers={"X-User": "alice"})
+    assert resp.status_code in (404, 405)
