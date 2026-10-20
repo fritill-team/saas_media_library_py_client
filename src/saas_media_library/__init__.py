@@ -11,6 +11,12 @@ from saas_media_library.migration import (
     profiles_from_policies,
     render_profiles_module,
 )
+from saas_media_library.permalinks import (
+    Permalink,
+    PermalinksAPI,
+    permalink_url,
+    validate_permalink_name,
+)
 from saas_media_library.processing_options import ProcessingOptionsAPI
 from saas_media_library.profiles import UploadProfile
 from saas_media_library.uploads import UploadsAPI
@@ -68,6 +74,10 @@ __all__ = [
     "GrantsAPI",
     "MediaGrant",
     "grant_profile_payload",
+    "Permalink",
+    "PermalinksAPI",
+    "permalink_url",
+    "validate_permalink_name",
     "AssetUrlCache",
     "DeliveryAPI",
     "ProcessingOptionsAPI",
