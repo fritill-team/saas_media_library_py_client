@@ -55,13 +55,13 @@ def _asset_json(asset_id, *, thumbnail: bool = True) -> dict:
             "durationSeconds": 12.5,
             "variants": [
                 {"name": "720p", "width": 1280, "height": 720, "bitrateKbps": 2500,
-                 "previewUrl": v720, "previewUrlType": "volume_token", "previewUrlExpiresIn": 3600},
+                 "previewUrl": v720, "previewUrlType": "gate", "previewUrlExpiresIn": 3600},
                 {"name": "1080p", "width": 1920, "height": 1080, "bitrateKbps": 5000,
-                 "previewUrl": v1080, "previewUrlType": "volume_token", "previewUrlExpiresIn": 3600},
+                 "previewUrl": v1080, "previewUrlType": "gate", "previewUrlExpiresIn": 3600},
             ],
             "language": None,
             "previewUrl": hls,
-            "previewUrlType": "volume_token",
+            "previewUrlType": "gate",
             "previewUrlExpiresIn": 3600,
         },
         {
@@ -73,7 +73,7 @@ def _asset_json(asset_id, *, thumbnail: bool = True) -> dict:
             "variants": [],
             "language": "en",
             "previewUrl": preview,
-            "previewUrlType": "presign",
+            "previewUrlType": "gate",
             "previewUrlExpiresIn": 900,
         },
     ]
@@ -86,12 +86,12 @@ def _asset_json(asset_id, *, thumbnail: bool = True) -> dict:
             "durationSeconds": None,
             "variants": [
                 {"name": "256", "width": 256, "height": None, "bitrateKbps": None,
-                 "previewUrl": THUMB_RENDITION_URL.format(id=asset_id), "previewUrlType": "cdn",
+                 "previewUrl": THUMB_RENDITION_URL.format(id=asset_id), "previewUrlType": "gate",
                  "previewUrlExpiresIn": None},
             ],
             "language": None,
             "previewUrl": THUMB_RENDITION_URL.format(id=asset_id),
-            "previewUrlType": "cdn",
+            "previewUrlType": "gate",
             "previewUrlExpiresIn": None,
         })
     return {
@@ -101,7 +101,7 @@ def _asset_json(asset_id, *, thumbnail: bool = True) -> dict:
         "status": "ready",
         "visibility": "restricted",
         "mimeType": "video/mp4",
-        "downloadType": "volume_token",
+        "downloadType": "gate",
         "downloadUrl": download,
         "downloadUrlExpiresIn": 3600,
         "hlsUrl": stream_hls,

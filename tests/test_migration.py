@@ -27,8 +27,7 @@ BASE_URL = "https://media.test"
 POLICIES_URL = f"{BASE_URL}/v1/manage/resource-policies"
 
 STEP_OPTIONS = {
-    "video_transcode": {"crf": 23, "preset": "fast"},
-    "video_adaptive_stream": {"formats": ["hls"], "resolutions": [360, 720, 1080]},
+    "video_package": {"crf": 23, "preset": "fast", "resolutions": ["360p", "720p", "1080p"]},
     "video_thumbnail": {"timestamp": 1.0},
 }
 
@@ -132,15 +131,16 @@ def test_enable_transcription_is_kept_as_the_policy_had_it(enabled) -> None:
     assert profile.to_session_fields()["processingConfig"]["enableTranscription"] is enabled
 
 
-def test_policy_transcription_default_is_kept() -> None:
-    # A policy response without the field defaults to True (the policy
-    # default), which must not turn into the policy-less default False.
+def test_processing_config_defaults_to_the_upload_default() -> None:
+    # The server always sends enableTranscription for a policy; a config
+    # without it is the server's upload default (off).
     policy = _policy(processing_config={"stepOptions": None})
 
     profile = profiles_from_policies([policy])["courses"]
 
-    assert policy.processing_config.enable_transcription is True
-    assert profile.processing_config.enable_transcription is True
+    assert ProcessingConfig().enable_transcription is False
+    assert policy.processing_config.enable_transcription is False
+    assert profile.processing_config.enable_transcription is False
 
 
 def test_other_policy_settings_carry_over() -> None:
@@ -164,9 +164,9 @@ def test_step_options_are_copied() -> None:
     policy = _policy()
     profile = profiles_from_policies([policy])["courses"]
 
-    policy.processing_config.step_options["video_transcode"]["crf"] = 99
+    policy.processing_config.step_options["video_package"]["crf"] = 99
 
-    assert profile.processing_config.step_options["video_transcode"]["crf"] == 23
+    assert profile.processing_config.step_options["video_package"]["crf"] == 23
 
 
 def test_profiles_are_sorted_by_key() -> None:

@@ -36,7 +36,7 @@ def _delivery_asset(asset_id, visibility: str = "restricted") -> dict:
         "status": "ready",
         "visibility": visibility,
         "mimeType": "video/mp4",
-        "downloadType": "volume_token",
+        "downloadType": "gate",
         "downloadUrl": f"https://media.test/v/{asset_id}?token=x",
         "downloadUrlExpiresIn": 3600,
         "renditions": [],
@@ -168,7 +168,7 @@ def test_get() -> None:
         asset = client.delivery.get(asset_id)
 
     assert asset.id == asset_id
-    assert asset.download_type == "volume_token"
+    assert asset.download_type == "gate"
 
 
 @respx.mock
@@ -464,4 +464,20 @@ def test_resolve_items_carry_stream_urls() -> None:
 def test_download_type_values() -> None:
     from saas_media_library import DownloadType
 
-    assert [t.value for t in DownloadType] == ["presign", "cdn", "volume_token", "gate"]
+    assert [t.value for t in DownloadType] == ["gate", "unavailable"]
+
+
+@respx.mock
+def test_get_unavailable_asset_has_no_download_url() -> None:
+    from saas_media_library import DownloadType
+
+    asset_id = uuid4()
+    body = {**_delivery_asset(asset_id), "downloadType": "unavailable",
+            "downloadUrl": None, "downloadUrlExpiresIn": None}
+    respx.get(f"{DELIVERY_URL}/{asset_id}").mock(return_value=httpx.Response(200, json=body))
+
+    with _make_client() as client:
+        asset = client.delivery.get(asset_id)
+
+    assert asset.download_type == DownloadType.UNAVAILABLE
+    assert asset.download_url is None

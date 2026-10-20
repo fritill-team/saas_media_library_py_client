@@ -41,19 +41,12 @@ def processing_config_payload(
     """Serialize a processing config for ``POST /manage/uploads/sessions``.
 
     Always writes every key (camelCase, as the server's policy
-    ``processingConfig``). ``enable_transcription`` that was never set is sent
-    as ``False``, the server's policy-less default: the client model defaults
-    it to ``True`` only for resource-policy compatibility.
+    ``processingConfig``); ``enable_transcription`` defaults to ``False``, as
+    on the server.
     """
     if not isinstance(config, ProcessingConfig):
         config = ProcessingConfig.model_validate(config)
-    return _with_upload_defaults(config).model_dump(by_alias=True)
-
-
-def _with_upload_defaults(config: ProcessingConfig) -> ProcessingConfig:
-    if "enable_transcription" in config.model_fields_set:
-        return config
-    return config.model_copy(update={"enable_transcription": False})
+    return config.model_dump(by_alias=True)
 
 
 class UploadProfile(BaseModel):
@@ -81,7 +74,7 @@ class UploadProfile(BaseModel):
 
     ``processing_config``: None lets the server default apply (no step
     options, transcription off). An ``enable_transcription`` left unset is
-    likewise normalized to ``False``.
+    ``False`` too.
 
     ``allow_multiple`` is informational (whether a form field may take
     several files); nothing here enforces it.
@@ -114,11 +107,6 @@ class UploadProfile(BaseModel):
                 raise ValueError(f"{mime_type!r} is not a MIME type (type/subtype)")
             normalized.add(value)
         return normalized
-
-    @field_validator("processing_config")
-    @classmethod
-    def _apply_upload_defaults(cls, v: Optional[ProcessingConfig]) -> Optional[ProcessingConfig]:
-        return _with_upload_defaults(v) if v is not None else None
 
     @model_validator(mode="after")
     def _check_size_bounds(self) -> UploadProfile:

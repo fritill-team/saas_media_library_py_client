@@ -99,3 +99,44 @@ def test_manage_asset_stream_urls_default_to_none() -> None:
         asset = client.assets.get(asset_id)
 
     assert (asset.hls_url, asset.dash_url, asset.stream_url_expires_in) == (None, None, None)
+
+
+@respx.mock
+def test_get_parses_preview_urls_of_asset_renditions_and_variants() -> None:
+    asset_id = uuid4()
+    url = "https://media.test/o/x?token=t"
+    preview = {"previewUrl": url, "previewUrlType": "gate", "previewUrlExpiresIn": 900}
+    body = {
+        **_asset_response(asset_id, "private"),
+        **preview,
+        "renditions": [{
+            "id": str(uuid4()),
+            "renditionType": "thumbnail",
+            "entrypoint": "thumb.webp",
+            "status": "ready",
+            "createdAt": "2026-05-08T00:00:00",
+            "updatedAt": "2026-05-08T00:00:00",
+            "variants": [{"name": "256", "entrypoint": "thumb-256.webp", **preview}],
+            **preview,
+        }],
+    }
+    respx.get(f"{BASE_URL}/v1/manage/assets/{asset_id}").mock(
+        return_value=httpx.Response(200, json=body)
+    )
+
+    with _make_client() as client:
+        asset = client.assets.get(asset_id)
+
+    rendition = asset.renditions[0]
+    for item in (asset, rendition, rendition.variants[0]):
+        assert (item.preview_url, item.preview_url_type, item.preview_url_expires_in) == (url, "gate", 900)
+
+
+def test_preview_urls_default_to_none() -> None:
+    from saas_media_library import Asset
+
+    asset = Asset.model_validate(_asset_response(uuid4(), "public"))
+
+    assert asset.preview_url is None
+    assert asset.preview_url_type is None
+    assert asset.preview_url_expires_in is None

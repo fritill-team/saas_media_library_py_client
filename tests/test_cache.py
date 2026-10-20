@@ -37,7 +37,7 @@ def _ok(
             "status": "ready",
             "entrypoint": "master.m3u8",
             "previewUrl": "https://media.test/hls/master.m3u8?token=r",
-            "previewUrlType": "volume_token",
+            "previewUrlType": "gate",
             "previewUrlExpiresIn": rendition_expires,
             "variants": [
                 {"name": f"v{i}", "previewUrl": f"https://media.test/hls/{i}?token=v",
@@ -55,7 +55,7 @@ def _ok(
             "status": asset_status,
             "visibility": "restricted",
             "mimeType": "video/mp4",
-            "downloadType": "volume_token",
+            "downloadType": "gate",
             "downloadUrl": "https://media.test/v/x?token=d",
             "downloadUrlExpiresIn": download_expires,
             "renditions": renditions,

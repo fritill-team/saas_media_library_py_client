@@ -119,8 +119,8 @@ def _profile_from_policy(key: str, policy: ResourcePolicy) -> UploadProfile:
         allow_multiple=constraints.allow_multiple,
         required_permissions=set(permissions.required_permissions),
         allow_anonymous=permissions.allow_anonymous,
-        # Every field set explicitly: UploadProfile turns an unset
-        # enable_transcription into False, the policy-less default.
+        # Every field copied: the policy's enable_transcription (a policy
+        # defaults to True) must not fall back to the upload default False.
         processing_config=ProcessingConfig(
             step_options=copy.deepcopy(config.step_options),
             use_filename_as_asset_id=config.use_filename_as_asset_id,

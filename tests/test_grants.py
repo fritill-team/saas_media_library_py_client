@@ -192,7 +192,7 @@ def test_get_sends_grants():
     asset = uuid4()
     route = respx.get(f"{DELIVERY_URL}/{asset}").mock(return_value=httpx.Response(200, json={
         "id": str(asset), "kind": "image", "title": "x", "status": "ready", "visibility": "private",
-        "mimeType": "image/png", "renditions": [], "downloadType": "presign",
+        "mimeType": "image/png", "renditions": [], "downloadType": "gate",
         "downloadUrl": "https://files/x", "downloadUrlExpiresIn": 300,
     }))
     _client().delivery.get(asset, grants="mlg_a")

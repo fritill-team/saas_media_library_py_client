@@ -59,13 +59,12 @@ class DownloadType(StrEnum):
     The fields stay plain ``str`` so a newer server value never breaks
     parsing; compare them against these values.
     """
-    PRESIGN = "presign"            # S3 presigned URL (expires)
-    CDN = "cdn"                    # public CDN URL (no expiry)
-    VOLUME_TOKEN = "volume_token"  # volume URL with a signed token (expires)
     GATE = "gate"                  # R2 object behind the delivery gate: /o/… with a
                                    # token (expires), or tokenless when the edge may
                                    # cache it (no expiry); the URL is None when the
                                    # gate would refuse the object
+    UNAVAILABLE = "unavailable"    # no URL: the bytes are not in the tenant's
+                                   # R2 bucket (``download_url`` is None)
 
 
 # ── Resource Policy models ─────────────────────────────────────────────
@@ -89,7 +88,9 @@ class PermissionRequirements(BaseModel):
 class ProcessingConfig(BaseModel):
     step_options: Optional[Dict[str, Dict[str, Any]]] = Field(None, alias="stepOptions")
     use_filename_as_asset_id: bool = Field(False, alias="useFilenameAsAssetId")
-    enable_transcription: bool = Field(True, alias="enableTranscription")
+    # False, as the server's upload default. Resource policy responses always
+    # carry the field, so a policy keeps its own value.
+    enable_transcription: bool = Field(False, alias="enableTranscription")
 
     # Ignore unknown fields (e.g., legacy `autoProcess`) so older API responses
     # don't break the client.
@@ -127,6 +128,9 @@ class RenditionVariant(BaseModel):
     channels: Optional[int] = None
     blob_ids: List[UUID] = Field(default_factory=list, alias="blobIds")
     extras: Dict[str, Any] = Field(default_factory=dict)
+    preview_url: Optional[str] = Field(None, alias="previewUrl")
+    preview_url_type: Optional[str] = Field(None, alias="previewUrlType")
+    preview_url_expires_in: Optional[int] = Field(None, alias="previewUrlExpiresIn")
 
     model_config = {"populate_by_name": True}
 
@@ -145,6 +149,9 @@ class Rendition(BaseModel):
     extras: Dict[str, Any] = Field(default_factory=dict)
     created_at: datetime = Field(alias="createdAt")
     updated_at: datetime = Field(alias="updatedAt")
+    preview_url: Optional[str] = Field(None, alias="previewUrl")
+    preview_url_type: Optional[str] = Field(None, alias="previewUrlType")
+    preview_url_expires_in: Optional[int] = Field(None, alias="previewUrlExpiresIn")
 
     model_config = {"populate_by_name": True}
 
@@ -168,6 +175,12 @@ class Asset(BaseModel):
     # don't return it, and for assets not created by an upload session.
     upload_session_id: Optional[UUID] = Field(None, alias="uploadSessionId")
     renditions: List[Rendition] = Field(default_factory=list)
+    # A gate link to the file (``preview_url_type`` is a ``DownloadType``);
+    # None when there is none. ``preview_url_expires_in`` is None for a link
+    # that does not expire.
+    preview_url: Optional[str] = Field(None, alias="previewUrl")
+    preview_url_type: Optional[str] = Field(None, alias="previewUrlType")
+    preview_url_expires_in: Optional[int] = Field(None, alias="previewUrlExpiresIn")
     # HLS/DASH entrypoints on the stream Worker, for R2 video/audio with a
     # ready CMAF rendition, and their token's lifetime in seconds. None from
     # servers that don't send them, and when there is no stream.

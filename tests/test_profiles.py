@@ -54,7 +54,7 @@ def _delivery_asset(**overrides) -> DeliveryAsset:
         "status": "ready",
         "visibility": "restricted",
         "mimeType": "image/png",
-        "downloadType": "presign",
+        "downloadType": "gate",
     }
     data.update(overrides)
     return DeliveryAsset.model_validate(data)
@@ -363,7 +363,7 @@ def test_processing_config_copied_from_policy_keeps_its_values() -> None:
         "collectionName": "video",
         "fileConstraints": {"allowedMimeTypes": ["video/mp4"]},
         "permissionRequirements": {},
-        "processingConfig": {"stepOptions": {"video_transcode": {"crf": 23}}, "enableTranscription": True},
+        "processingConfig": {"stepOptions": {"video_package": {"crf": 23}}, "enableTranscription": True},
         "kind": "video",
         "visibility": "restricted",
         "isActive": True,
