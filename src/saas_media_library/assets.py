@@ -89,9 +89,9 @@ class AssetsAPI:
     ) -> Asset:
         """Change an asset's visibility tier.
 
-        Transitions to or from PUBLIC also move the asset's S3-stored files
-        between the private and public buckets; if that fails the server
-        answers 400 (``MediaLibraryError``).
+        Visibility is only data: no bytes move (every asset stays in the
+        tenant's R2 bucket). Leaving PUBLIC purges the asset's edge-cached
+        copies.
 
         Once the server turns on ``RESTRICTED_ASSETS_SERVICE_ONLY`` or
         ``MANAGE_RESTRICTED_PREVIEWS_PRIVILEGED_ONLY``, only a privileged
@@ -115,10 +115,11 @@ class AssetsAPI:
 
         POST /v1/manage/assets/bulk-visibility
 
-        Assets the change fails for are counted in ``failed``: a failed move
-        between buckets, or (with the server's RESTRICTED switches on) a
-        RESTRICTED asset changed by a caller who is not privileged, whose
-        item carries the error ``forbidden``. See ``update_visibility``.
+        Assets the change fails for are counted in ``failed``: an unknown
+        asset (error ``not_found``), a server error (``internal_error``), or
+        (with the server's RESTRICTED switches on) a RESTRICTED asset changed
+        by a caller who is not privileged (``forbidden``). See
+        ``update_visibility``.
         """
         payload = {
             "assetIds": [str(a) for a in asset_ids],

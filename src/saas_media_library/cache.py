@@ -44,7 +44,8 @@ class AssetUrlCache:
     An entry lives until its shortest link expires, minus ``safety_margin``
     seconds (request latency, clock skew, and time for the browser to start
     the download). "Its links" are the download URL, the HLS/DASH stream URLs
-    (``stream_url_expires_in``) and every rendition and variant preview URL. Entries without any expiry (CDN links) live for
+    (``stream_url_expires_in``) and every rendition and variant preview URL.
+    Entries without any expiry (tokenless gate links of public assets) live for
     ``default_ttl`` seconds. A result whose links expire within the margin is
     not cached.
 

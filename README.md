@@ -72,7 +72,7 @@ Your backend ──────────────────────�
      │  ▲                                        ▲     │    ── /v1/delivery/… (links)
      │  │ your API                               │     │
      ▼  │                                        │     ▼
-  Browser ──── media grant (mlg_…) ──────────────┘   CDN / nginx / S3 ──▶ file bytes
+  Browser ──── media grant (mlg_…) ──────────────┘   delivery gate (R2) ──▶ file bytes
 ```
 
 ### Tenants and `X-Tenant`
@@ -119,7 +119,7 @@ Each asset has one of three visibility tiers.
 
 | Visibility | On `/delivery` today (`DELIVERY_AUTH=off`, the default) | With `DELIVERY_AUTH=enforce` |
 |---|---|---|
-| `public` | Anyone. CDN link, no token | Unchanged |
+| `public` | Anyone. Gate link without a token, cached at the edge | Unchanged |
 | `private` | Anyone who sends the tenant and knows the asset id. Not an access check | Only a service token, a verified admin, or a grant listing the asset |
 | `restricted` | A service token, or a media grant listing the asset. Your app decides which users get the link. (Users holding a deprecated per-user access grant still do too, until the server sets `RESTRICTED_ASSETS_SERVICE_ONLY`) | Unchanged |
 
@@ -143,8 +143,9 @@ open. See [`docs/security/media-grants.md`](https://github.com/fritill-team/saas
 ### Processing
 
 After an upload is finalized, the asset runs through the fixed pipeline of
-its kind, for example `virus_scan → image_derive → relocate_to_bucket` for
-images. Steps that take options read them from the upload's
+its kind, for example `virus_scan → image_derive` for images and
+`virus_scan → video_package → video_thumbnail → video_transcription` for
+videos. Steps that take options read them from the upload's
 `ProcessingConfig.step_options`. A configurable step without options runs
 with its defaults; no step waits for input. The asset's `status` moves from
 `processing` to `ready` (or `failed`). See
@@ -215,6 +216,7 @@ The client has one attribute per API:
 | `client.assets` | `AssetsAPI` | Manage assets: get, list, delete, visibility |
 | `client.delivery` | `DeliveryAPI` | Download and preview links |
 | `client.grants` | `GrantsAPI` | Media grants for browsers |
+| `client.permalinks` | `PermalinksAPI` | Stable public addresses for public assets |
 | `client.policies` | `ResourcePoliciesAPI` | Deprecated: resource policies |
 | `client.access` | `AssetAccessAPI` | Deprecated: per-user access grants |
 
@@ -302,8 +304,7 @@ COURSE_VIDEO = UploadProfile(
     max_size_bytes=2_000_000_000,
     processing_config=ProcessingConfig(
         step_options={
-            "video_transcode": {"crf": 23, "preset": "fast"},
-            "video_adaptive_stream": {"formats": ["hls"], "resolutions": ["360p", "720p", "1080p"]},
+            "video_package": {"crf": 23, "preset": "fast", "resolutions": ["360p", "720p", "1080p"]},
             "video_thumbnail": {"timestamp": 1.0},
         },
         enable_transcription=True,
@@ -352,10 +353,11 @@ compared literally and only matches a file whose type is exactly
 |---|---|---|
 | `step_options` | `None` | `{step: {option: value}}`. Step names must belong to the kind's pipeline, or the server answers 400. Steps left out run with their defaults |
 | `use_filename_as_asset_id` | `False` | Use the uploaded filename as the asset id. An upload named after an existing asset's id replaces that asset: leave it off unless your backend controls filenames. `web_app` uploads always use the filename |
-| `enable_transcription` | `True` on the model, `False` for uploads | See below |
+| `enable_transcription` | `False` | See below |
 
-`enable_transcription` defaults to **off** for uploads. A `ProcessingConfig`
-that does not set it is sent with `enableTranscription: false`. Set it to
+`enable_transcription` defaults to **off**, as on the server. A
+`ProcessingConfig` that does not set it is sent with
+`enableTranscription: false`. Set it to
 `True` explicitly where you want subtitles. The server's
 `ENABLE_TRANSCRIPTION` flag must also be on.
 
@@ -867,11 +869,11 @@ print(bulk.updated, bulk.failed, bulk.items)
 `failed` and the raw `items` (`{"assetId", "ok", "changed", "error"}` dicts).
 The server accepts 1 to 500 ids.
 
-- Moving to or from `public` also moves the asset's S3 files between the
-  private and public buckets (videos, audio and web apps stay on the volume),
-  so making an asset `public` publishes it on the CDN. If the move fails,
-  `update_visibility` raises `MediaLibraryError` (status 400) and the bulk
-  call counts the asset in `failed`.
+- Visibility is only data: no bytes move, every file stays in the tenant's
+  R2 bucket. Making an asset `public` lets its gate links go without a token
+  and be cached at the edge; leaving `public` purges the edge copies. The
+  bulk call counts unknown assets (`"error": "not_found"`) and server
+  errors (`"internal_error"`) in `failed`.
 - While the server runs with `RESTRICTED_ASSETS_SERVICE_ONLY` or
   `MANAGE_RESTRICTED_PREVIEWS_PRIVILEGED_ONLY`, only a privileged caller may
   move a `restricted` asset to another visibility: a service token, a grant
@@ -934,12 +936,48 @@ except ConflictError as exc:
 
 ### When previews are withheld
 
-The server's `/manage` responses also carry preview links. With
+The manage `Asset`, its renditions and their variants carry preview links
+(`preview_url`, `preview_url_type`, `preview_url_expires_in`): gate links,
+`None` when the file is not in the tenant's R2 bucket. With
 `MANAGE_RESTRICTED_PREVIEWS_PRIVILEGED_ONLY=true`, a `restricted` asset's
-preview links are `null` for callers that are not privileged (thumbnails
-excepted). This client's manage models do not expose preview links at all
-(only the stream URLs), so this only matters if you read the raw responses:
-use `client.delivery` for links.
+preview links are `None` for callers that are not privileged (thumbnails
+excepted). For links you hand to users, use `client.delivery`.
+
+### Permalinks for public assets
+
+A permalink is a stable public address, `{media host}/p/{name}`, that you
+hand out once and re-point later: for example a user's avatar. Your app
+picks the name, stores the **name** (not the URL), and re-points it when the
+user uploads a new picture; every page that embedded the address follows.
+Service token only.
+
+```python
+from saas_media_library import permalink_url
+
+link = client.permalinks.set("users/42/avatar", new_asset_id)  # create or re-point
+link.url                                    # "https://media.example.com/p/users/42/avatar"
+client.permalinks.get("users/42/avatar")    # NotFoundError when unknown
+client.permalinks.delete("users/42/avatar")
+
+# Rendering: build the URL from the stored name
+src = permalink_url("https://media.example.com", "users/42/avatar")
+```
+
+- Only `public` assets: `set` raises `ValidationError` (422) for a
+  `private` or `restricted` asset and `NotFoundError` for a missing one. A
+  public asset that is not ready yet is accepted; `/p/{name}` answers 404
+  until it is.
+- `/p/{name}` serves the file directly, as a tokenless gate link
+  (`?download=1` for an attachment). It answers 404 once the target is no
+  longer public, ready or servable.
+- Re-pointing or deleting purges the old edge copy.
+- Names: segments of letters, digits, `.`, `_` and `-` (not starting with
+  `.`) joined by `/`, at most 255 characters. The client raises
+  `ValueError` for any other name before sending a request
+  (`validate_permalink_name`).
+- `permalink_url` needs the media host that serves files (the server's
+  `VOLUME_BASE_URL`), not the API `base_url`. `Permalink.url` is built from
+  it by the server.
 
 ## Get delivery links
 
@@ -1006,10 +1044,8 @@ for item in items:
 
 | `DownloadType` | Value | Link |
 |---|---|---|
-| `PRESIGN` | `"presign"` | S3 presigned URL; expires |
-| `CDN` | `"cdn"` | Public CDN URL; does not expire |
-| `VOLUME_TOKEN` | `"volume_token"` | Volume URL with a signed token; expires |
 | `GATE` | `"gate"` | R2 object behind the delivery gate (`/o/…`): with a token (expires), or without one for public objects the edge may cache (does not expire). The URL is `None` when the gate would refuse the object (for example a file not yet scanned) |
+| `UNAVAILABLE` | `"unavailable"` | No link: the file is not in the tenant's R2 bucket. `download_url` is `None` |
 
 ### Stream URLs
 
@@ -1033,8 +1069,8 @@ not mint the stream token. Both URLs share one token and one lifetime.
 Links are bound to the file, not to the user who asked. Each link comes with
 its lifetime in seconds: `download_url_expires_in` and
 `stream_url_expires_in` on the asset and `preview_url_expires_in` on each
-rendition and variant. `None` or `0` means the link does not expire (CDN
-links). Cache one link per asset, not per user, until shortly before it
+rendition and variant. `None` or `0` means the link does not expire
+(tokenless gate links of public assets). Cache one link per asset, not per user, until shortly before it
 expires.
 
 ### Cache links with `AssetUrlCache`
@@ -1119,7 +1155,7 @@ proxies bytes.
 Browser ──▶ your backend ── can_access(user, asset_ids)?  (your data)
                   └─ service token ─▶ POST /v1/delivery/assets/resolve ─▶ links
 Browser ◀── links ┘
-Browser ──▶ media library delivery (CDN / nginx / S3) ─▶ file
+Browser ──▶ media library delivery gate (R2) ─▶ file
 ```
 
 ### Recommended: links in your own responses
@@ -1613,7 +1649,7 @@ def test_resolve_returns_links():
         return_value=httpx.Response(200, json={"items": [{
             "assetId": asset_id, "status": "ok", "thumbnailUrl": None, "error": None,
             "asset": {"id": asset_id, "kind": "image", "status": "ready", "visibility": "private",
-                      "mimeType": "image/png", "downloadType": "presigned",
+                      "mimeType": "image/png", "downloadType": "gate",
                       "downloadUrl": "https://files.test/a.png", "downloadUrlExpiresIn": 3600,
                       "renditions": []},
         }], "total": 1}),
@@ -1683,7 +1719,7 @@ test_cache = AssetUrlCache(clock=lambda: now[0], safety_margin=0)
 entry = DeliveryBatchResolveResult.model_validate({
     "assetId": "44444444-4444-4444-4444-444444444444", "status": "ok",
     "asset": {"id": "44444444-4444-4444-4444-444444444444", "kind": "image", "status": "ready",
-              "visibility": "private", "mimeType": "image/png", "downloadType": "presigned",
+              "visibility": "private", "mimeType": "image/png", "downloadType": "gate",
               "downloadUrl": "https://files.test/x", "downloadUrlExpiresIn": 60, "renditions": []},
 })
 assert test_cache.put(entry) is True
@@ -1708,7 +1744,7 @@ All enums are `str` enums: they compare equal to their values.
 | `AssetStatus` | `pending`, `uploaded`, `processing`, `awaiting_input`, `ready`, `failed`, `archived`, `deleted` |
 | `Visibility` | `restricted`, `private`, `public` |
 | `ResolveStatus` | `ok`, `not_found`, `forbidden`, `error` |
-| `DownloadType` | `presign`, `cdn`, `volume_token`, `gate` |
+| `DownloadType` | `gate`, `unavailable` |
 | `GrantScope` | `upload`, `read`, `update`, `delete`, `process`, `renditions`, `manage:*` |
 
 ### Manage models
@@ -1731,6 +1767,9 @@ All enums are `str` enums: they compare equal to their values.
 | `resource_policy_id` | `resourcePolicyId` | `UUID` | `None` |
 | `upload_session_id` | `uploadSessionId` | `UUID` | `None` |
 | `renditions` | `renditions` | `List[Rendition]` | `[]` |
+| `preview_url` | `previewUrl` | `str` | `None` |
+| `preview_url_type` | `previewUrlType` | `str` (`DownloadType`) | `None` |
+| `preview_url_expires_in` | `previewUrlExpiresIn` | `int` | `None` |
 | `hls_url` | `hlsUrl` | `str` | `None` |
 | `dash_url` | `dashUrl` | `str` | `None` |
 | `stream_url_expires_in` | `streamUrlExpiresIn` | `int` | `None` |
@@ -1752,6 +1791,9 @@ All enums are `str` enums: they compare equal to their values.
 | `extras` | `extras` | `Dict[str, Any]` | `{}` |
 | `created_at` | `createdAt` | `datetime` | required |
 | `updated_at` | `updatedAt` | `datetime` | required |
+| `preview_url` | `previewUrl` | `str` | `None` |
+| `preview_url_type` | `previewUrlType` | `str` (`DownloadType`) | `None` |
+| `preview_url_expires_in` | `previewUrlExpiresIn` | `int` | `None` |
 
 #### `RenditionVariant`
 
@@ -1767,6 +1809,9 @@ All enums are `str` enums: they compare equal to their values.
 | `channels` | `channels` | `int` | `None` |
 | `blob_ids` | `blobIds` | `List[UUID]` | `[]` |
 | `extras` | `extras` | `Dict[str, Any]` | `{}` |
+| `preview_url` | `previewUrl` | `str` | `None` |
+| `preview_url_type` | `previewUrlType` | `str` (`DownloadType`) | `None` |
+| `preview_url_expires_in` | `previewUrlExpiresIn` | `int` | `None` |
 
 #### `BatchResolveResult`
 
@@ -1807,6 +1852,16 @@ All enums are `str` enums: they compare equal to their values.
 | `blob_id` | `blobId` | `UUID` | `None` |
 | `scan_status` | `scanStatus` | `str` | `None` |
 | `file_count` | `fileCount` | `int` | required |
+
+#### `Permalink`
+
+| Field | JSON key | Type | Default |
+|---|---|---|---|
+| `name` | `name` | `str` | required |
+| `asset_id` | `assetId` | `UUID` | required |
+| `url` | `url` | `str` | required |
+| `created_at` | `createdAt` | `datetime` | required |
+| `updated_at` | `updatedAt` | `datetime` | required |
 
 ### Delivery models
 
@@ -1936,7 +1991,7 @@ All enums are `str` enums: they compare equal to their values.
 |---|---|---|---|
 | `step_options` | `stepOptions` | `Dict[str, Dict[str, Any]]` | `None` |
 | `use_filename_as_asset_id` | `useFilenameAsAssetId` | `bool` | `False` |
-| `enable_transcription` | `enableTranscription` | `bool` | `True` |
+| `enable_transcription` | `enableTranscription` | `bool` | `False` |
 
 `BulkVisibilityResult` is a plain class with `items` (list of dicts),
 `updated` (int) and `failed` (int).
@@ -2006,7 +2061,7 @@ MediaLibraryClient(base_url, tenant_id, token=None, timeout=30.0, http_client=No
 | `set_token(token)` | Replace the `Authorization` header | `None` |
 | `close()` | Close the `httpx.Client` the client created (not one you passed) | `None` |
 | `__enter__` / `__exit__` | Context manager; closes on exit | the client |
-| `uploads`, `processing`, `assets`, `delivery`, `grants`, `policies`, `access` | The API objects below | — |
+| `uploads`, `processing`, `assets`, `delivery`, `grants`, `permalinks`, `policies`, `access` | The API objects below | — |
 
 ### `UploadsAPI` (`client.uploads`)
 
@@ -2041,7 +2096,7 @@ MediaLibraryClient(base_url, tenant_id, token=None, timeout=30.0, http_client=No
 | `get(asset_id)` | `GET MANAGE_BASE/{id}` | `Asset` | `NotFoundError`, HTTP errors | One asset's metadata and renditions |
 | `resolve(asset_ids)` | `POST MANAGE_BASE/resolve` | `list[BatchResolveResult]` | HTTP errors (422 beyond 100 ids) | Metadata for up to 100 assets |
 | `delete(asset_id)` | `DELETE MANAGE_BASE/{id}` | `None` | `NotFoundError`, HTTP errors | Delete an asset and its records |
-| `update_visibility(asset_id, visibility)` | `PATCH MANAGE_BASE/{id}` | `Asset` | `AuthenticationError` (403), `MediaLibraryError` (400), HTTP errors | Change one asset's visibility |
+| `update_visibility(asset_id, visibility)` | `PATCH MANAGE_BASE/{id}` | `Asset` | `AuthenticationError` (403), HTTP errors | Change one asset's visibility (no bytes move) |
 | `bulk_update_visibility(asset_ids, visibility)` | `POST MANAGE_BASE/bulk-visibility` | `BulkVisibilityResult` | HTTP errors | Change visibility of up to 500 assets |
 | `list_deploys(asset_id, *, limit=50, offset=0)` | `GET MANAGE_BASE/{id}/deploys` | `WebAppDeployList` | `NotFoundError`, HTTP errors | A web app's deploys, newest first |
 | `activate_deploy(asset_id, deploy_id)` | `POST MANAGE_BASE/{id}/deploys/{deploy_id}/activate` | `WebAppDeployList` | `NotFoundError`, `ConflictError` (with `reason`), HTTP errors | Roll back a web app to a retained deploy |
@@ -2067,6 +2122,17 @@ MediaLibraryClient(base_url, tenant_id, token=None, timeout=30.0, http_client=No
 |---|---|---|---|---|
 | `issue(scopes, *, asset_ids=None, profile=None, session_ids=None, subject=None, ttl_seconds=None, collection_name=None)` | `POST BASE` | `MediaGrant` | `ValidationError` (422), `AuthenticationError`, `ServerError` (503), `ValueError` (empty grant profile) | Issue a grant |
 | `read(asset_ids, *, subject=None, ttl_seconds=None)` | `POST BASE` | `MediaGrant` | `ValueError` (no ids), as `issue` | Issue a `read` grant |
+
+### `PermalinksAPI` (`client.permalinks`)
+
+`BASE = "/v1/manage/permalinks"`. Service token only. Every method raises
+`ValueError` for an invalid name before sending a request.
+
+| Method | HTTP | Returns | Raises | Does |
+|---|---|---|---|---|
+| `set(name, asset_id)` | `PUT BASE/{name}` | `Permalink` | `NotFoundError` (asset), `ValidationError` (not public), `AuthenticationError`, HTTP errors | Create or re-point a name |
+| `get(name)` | `GET BASE/{name}` | `Permalink` | `NotFoundError`, HTTP errors | One permalink |
+| `delete(name)` | `DELETE BASE/{name}` | `None` | `NotFoundError`, HTTP errors | Remove a name; its edge copy is purged |
 
 ### `AccessGate`
 
@@ -2123,6 +2189,8 @@ camelCase JSON as a `dict`.
 | Function | Returns | Raises | Does |
 |---|---|---|---|
 | `thumbnail_url(result)` | `str` or `None` | — | A result's public thumbnail link |
+| `permalink_url(media_base_url, name)` | `str` | `ValueError` (invalid name) | `{media_base_url}/p/{name}` |
+| `validate_permalink_name(name)` | `str` | `ValueError` | `name` unchanged when the server accepts it |
 | `grant_profile_payload(profile)` | `dict` | `ValueError` (empty MIME set, `max_size_bytes=0`) | The server-side grant profile for an `UploadProfile` |
 | `policy_key(resource_type, collection_name=None)` | `str` | — | `"resource_type/collection_name"` or `"resource_type"` |
 | `find_profile(profiles, resource_type, collection_name=None)` | `UploadProfile` or `None` | — | The profile replacing the policy the server used for that pair |
@@ -2202,6 +2270,20 @@ method emits a `DeprecationWarning`. Replacement: `AccessGate`.
 
 <a id="upgrading-and-server-compatibility"></a>
 ## Upgrading
+
+### From v0.25: R2-only server
+
+- `DownloadType.PRESIGN`, `CDN` and `VOLUME_TOKEN` are gone (the server
+  sends only `gate` or `unavailable`); add `DownloadType.UNAVAILABLE` where
+  you handle a missing link. `download_type` stays a plain `str`.
+- `ProcessingConfig.enable_transcription` defaults to `False`, as on the
+  server. Uploads already sent `False` when unset; only code that read the
+  model default directly sees a change. Resource policy responses always
+  carry the field.
+- Step names in `step_options` must be current: `video_package` replaces
+  `video_transcode` and `video_adaptive_stream`; `relocate_to_bucket` and
+  `relocate_to_volume` are gone.
+- `update_visibility` no longer moves files, so it no longer fails with 400.
 
 ### From v0.23: `create_upload_router` no longer sends `base_url`
 
@@ -2355,7 +2437,9 @@ resource-policy retirement release, see the server's
 | `delivery.resolve(grants=)` / `get(grants=)` | `X-Media-Grants` on `/delivery` | The header is ignored: assets a grant should cover come back `forbidden` |
 | `AccessGate`, `restricted` links with a service token | Service tokens resolve `restricted` assets | Items come back `forbidden` |
 | `hls_url`, `dash_url`, `stream_url_expires_in` | Stream URLs on resolve (and `STREAM_BASE_URL` set) | The fields are `None` |
-| `download_type == "gate"` | R2 storage behind the delivery gate | Not sent; other types only |
+| `download_type == "gate"` / `"unavailable"` | R2-only storage (the only types) | `presign`, `cdn` or `volume_token`, which this client no longer names |
+| `preview_url*` on the manage `Asset`, `Rendition`, `RenditionVariant` | Preview links on `/manage` | The fields are `None` |
+| `client.permalinks`, `permalink_url` | `/manage/permalinks` and `/p/` | `NotFoundError` (404) |
 | `assets.list_deploys`, `assets.activate_deploy` | Web-app rollback routes | `NotFoundError` (404) with `reason` `None` |
 
 Server settings that change what callers see, all off by default:
