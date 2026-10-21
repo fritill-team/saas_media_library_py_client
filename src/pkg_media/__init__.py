@@ -153,4 +153,4 @@ __all__ = [
 
 # The single source of the version: the release workflow rewrites this line,
 # and pyproject reads it ([tool.hatch.version]).
-__version__ = "0.26.0"
+__version__ = "0.27.0"
