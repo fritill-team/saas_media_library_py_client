@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-from typing import Any, Literal, Optional
+from typing import TYPE_CHECKING, Any, Literal, Optional
 
-import grpc
 import httpx
 
 from pkg_media._http import raise_for_status
 from pkg_media._sync import LoopThread, SyncAPI
-from pkg_media._transport.grpc_transport import GrpcTransport
 from pkg_media._transport.http_transport import BearerAuth, HttpTransport
 from pkg_media.asset_access import AssetAccessAPI
 from pkg_media.assets import AssetsAPI
@@ -19,6 +17,9 @@ from pkg_media.permalinks import PermalinksAPI
 from pkg_media.processing_options import ProcessingOptionsAPI
 from pkg_media.resource_policies import ResourcePoliciesAPI
 from pkg_media.uploads import UploadsAPI
+
+if TYPE_CHECKING:
+    import grpc
 
 __all__ = ["AsyncMediaClient", "MediaClient", "MediaLibraryClient", "raise_for_status"]
 
@@ -82,7 +83,7 @@ class AsyncMediaClient:
         retries: int = 2,
         secure: bool = False,
         http_client: Optional[httpx.AsyncClient] = None,
-        channel: Optional[grpc.aio.Channel] = None,
+        channel: Optional["grpc.aio.Channel"] = None,
     ):
         if any(v is not None for v in (token_url, client_id, client_secret)):
             if credentials is not None:
@@ -109,6 +110,12 @@ class AsyncMediaClient:
             if not target:
                 raise ValueError('transport="grpc" needs target (host:port)')
             self.base_url = None
+            try:
+                from pkg_media._transport.grpc_transport import GrpcTransport
+            except ImportError as exc:
+                raise ImportError(
+                    'transport="grpc" needs the grpc extra: pip install "pkg-media[grpc]"'
+                ) from exc
             self._transport = GrpcTransport(
                 target,
                 token=self._token_source() if (token or credentials) else None,

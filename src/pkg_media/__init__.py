@@ -151,9 +151,6 @@ __all__ = [
     "InternalError",
 ]
 
-from importlib.metadata import PackageNotFoundError, version
-
-try:
-    __version__ = version("pkg-media")
-except PackageNotFoundError:
-    __version__ = "unknown"
+# The single source of the version: the release workflow rewrites this line,
+# and pyproject reads it ([tool.hatch.version]).
+__version__ = "0.26.0"

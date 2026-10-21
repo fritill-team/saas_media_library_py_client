@@ -84,3 +84,47 @@ def test_the_typing_marker_ships(wheel_names: list[str]) -> None:
 
 def test_the_baseline_and_tools_do_not_ship(wheel_names: list[str]) -> None:
     assert not [n for n in wheel_names if "baseline" in n or n.startswith(("tools/", "proto/"))]
+
+
+def test_the_version_lives_in_one_place() -> None:
+    """release.yml rewrites __version__; a literal version beside it could disagree."""
+    assert "version" not in PYPROJECT["project"]
+    assert PYPROJECT["project"]["dynamic"] == ["version"]
+    assert PYPROJECT["tool"]["hatch"]["version"]["path"] == "src/pkg_media/__init__.py"
+
+
+def test_the_documented_install_line_names_real_extras() -> None:
+    """`pkg-media[grpc,fastapi] @ git+https://…@vX.Y.Z` (README, RELEASING, Discord)."""
+    extras = PYPROJECT["project"]["optional-dependencies"]
+    assert {"grpc", "fastapi"} <= set(extras)
+    assert "Private :: Do Not Upload" in PYPROJECT["project"]["classifiers"]
+
+
+def test_the_base_install_is_light() -> None:
+    base = " ".join(PYPROJECT["project"]["dependencies"])
+    for heavy in ("grpc", "protobuf", "googleapis", "fastapi"):
+        assert heavy not in base, f"{heavy} belongs in an extra, not the base install"
+
+
+def test_the_http_client_imports_without_the_grpc_extra() -> None:
+    """With grpc/protobuf absent, `import pkg_media` and the HTTP client work and
+    `transport="grpc"` names the extra."""
+    code = """
+import importlib.abc, sys
+class Block(importlib.abc.MetaPathFinder):
+    def find_spec(self, name, path=None, target=None):
+        if name.split(".")[0] in {"grpc", "grpc_status"} or name.startswith(("google.protobuf", "google.rpc")):
+            raise ImportError(f"blocked {name}")
+sys.meta_path.insert(0, Block())
+import pkg_media
+from pkg_media import MediaClient, AccessGate, UploadProfile, methods
+MediaClient(base_url="https://media.test", token="t").close()
+try:
+    MediaClient(transport="grpc", target="x:1", token="t")
+except ImportError as exc:
+    assert "pkg-media[grpc]" in str(exc), exc
+else:
+    raise AssertionError("grpc transport without the extra")
+"""
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr

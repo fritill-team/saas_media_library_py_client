@@ -1,0 +1,121 @@
+name: CI
+
+# Modeled on pkg_audit's ci.yml. Callable (workflow_call) so release.yml runs exactly
+# these checks before anything is tagged. Our checks: the test suite (which includes
+# tests/certify — stubs current with the protos — and the packaging tests), the proto
+# compatibility gate against the released baseline, and a light base install.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: test (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        # requires-python = ">=3.11"; installed by other repos, so every supported version.
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Sync
+        run: uv sync --all-groups --frozen --python ${{ matrix.python-version }}
+
+      - name: Tests (incl. stubs current, packaging, no-grpc import)
+        run: uv run --no-sync --python ${{ matrix.python-version }} pytest -q
+
+      - name: Proto compatibility with the released baseline
+        run: uv run --no-sync --python ${{ matrix.python-version }} python tools/check_compat.py
+
+  quality:
+    name: packaging
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Sync
+        run: uv sync --all-groups --frozen
+
+      - name: Build distributions
+        run: uv build
+
+      - name: Check distribution metadata
+        run: uv run --no-sync --with twine python -m twine check dist/*
+
+      # The base install is httpx + pydantic only: an HTTP-only consumer must not pull
+      # grpcio/protobuf (the `grpc` extra) or FastAPI (the `fastapi` extra). Read from the
+      # BUILT wheel. Any unexpected error exits 2 (a broken check, not a policy failure).
+      - name: Verify the base install stays light
+        run: |
+          uv run --no-sync python - <<'PY'
+          import sys, pathlib, re, zipfile, email
+
+          try:
+              wheels = list(pathlib.Path("dist").glob("*.whl"))
+              if len(wheels) != 1:
+                  print(f"::error::expected exactly one wheel in dist/, found {len(wheels)}")
+                  sys.exit(2)
+              with zipfile.ZipFile(wheels[0]) as zf:
+                  name = next(n for n in zf.namelist() if n.endswith(".dist-info/METADATA"))
+                  meta = email.message_from_bytes(zf.read(name))
+              deps = [d for d in (meta.get_all("Requires-Dist") or []) if "extra ==" not in d]
+              extras = set(meta.get_all("Provides-Extra") or [])
+          except Exception as exc:  # tooling failure, NOT a policy failure
+              print(f"::error::dependency check could not run: {exc!r}")
+              sys.exit(2)
+
+          names = {re.split(r"[\s<>=!~;\[]", d, maxsplit=1)[0].lower() for d in deps}
+          if names != {"httpx", "pydantic"}:
+              print(f"::error::base install must be httpx + pydantic only, got {sorted(names)}")
+              sys.exit(1)
+          if not {"grpc", "fastapi"} <= extras:
+              print(f"::error::the documented extras grpc, fastapi are missing: {sorted(extras)}")
+              sys.exit(1)
+          print(f"base install: {sorted(names)}; extras: {sorted(extras)}")
+          PY
+
+  notify-main-failure:
+    name: Notify Discord on main failure
+    runs-on: ubuntu-latest
+    needs: test
+    # Only alert for broken main — PR noise is deliberately excluded.
+    if: ${{ failure() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/discord-notify
+        with:
+          webhook: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          title: "❌ CI failed on main"
+          color: "15158332" # red
+          url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          message: |
+            **`${{ github.repository }}`** — tests are failing on `main`.
+
+            **Commit:** [`${{ github.sha }}`](${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }})
+            **Author:** ${{ github.actor }}

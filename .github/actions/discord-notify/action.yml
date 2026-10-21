@@ -1,0 +1,80 @@
+name: Discord Notify
+description: Post an embed to a Discord webhook. No-ops safely when the webhook secret is absent.
+
+inputs:
+  webhook:
+    description: Discord webhook URL. If empty, the step is skipped instead of failing.
+    required: true
+  title:
+    description: Embed title.
+    required: true
+  message:
+    description: Embed body (supports Discord markdown).
+    required: true
+  color:
+    description: Embed sidebar color as a decimal int. Default is neutral blurple.
+    required: false
+    default: "5793266"
+  url:
+    description: Optional link the title points at.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Post to Discord
+      shell: bash
+      env:
+        # Passed via env, never interpolated into the script body, so webhook
+        # URLs and untrusted commit text can't break out into the shell.
+        WEBHOOK: ${{ inputs.webhook }}
+        TITLE: ${{ inputs.title }}
+        MESSAGE: ${{ inputs.message }}
+        COLOR: ${{ inputs.color }}
+        LINK: ${{ inputs.url }}
+        REPO: ${{ github.repository }}
+        RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      run: |
+        set -euo pipefail
+
+        # A warning, not a notice. Skipping still keeps a webhook-less fork
+        # green, but the v0.1.0 release proved how quiet `::notice::` is: the
+        # workflows referenced `secrets.DISCORD_WEBHOOK` while the repo secret
+        # is `DISCORD_WEBHOOK_URL`, an undefined secret interpolates to "",
+        # and the whole announcement was silently dropped under a green check.
+        # A warning surfaces in the run's annotations, where a missing
+        # notification is actually noticeable.
+        if [ -z "${WEBHOOK}" ]; then
+          echo "::warning::DISCORD_WEBHOOK_URL is empty — notification NOT sent. Check the secret name."
+          exit 0
+        fi
+
+        # jq builds the JSON so quotes/newlines in commit messages are escaped
+        # correctly rather than producing malformed payloads.
+        payload="$(jq -n \
+          --arg title "$TITLE" \
+          --arg desc "$MESSAGE" \
+          --arg url "$LINK" \
+          --arg repo "$REPO" \
+          --arg run_url "$RUN_URL" \
+          --argjson color "$COLOR" \
+          '{
+             username: "Release Bot",
+             embeds: [ (
+               {
+                 title: $title,
+                 description: $desc,
+                 color: $color,
+                 footer: { text: $repo },
+                 fields: [ { name: "Workflow run", value: $run_url } ]
+               }
+               + (if $url == "" then {} else { url: $url } end)
+             ) ]
+           }')"
+
+        # --fail makes a non-2xx Discord response fail the step loudly.
+        curl --fail --silent --show-error \
+          -H "Content-Type: application/json" \
+          -X POST -d "$payload" \
+          "$WEBHOOK"

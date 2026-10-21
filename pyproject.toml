@@ -9,29 +9,38 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pkg-media"
-# The release workflow (auto-release.yml) bumps this line and tags what it wrote.
-version = "0.25.0"
+# Single source of truth: __version__ in src/pkg_media/__init__.py, rewritten by
+# .github/workflows/release.yml and read here by [tool.hatch.version].
+dynamic = ["version"]
 description = "Client, helpers and gRPC contract (fritill.media.v1) for the ITQ media library"
 readme = "README.md"
 # A package floor, not a service runtime: consumers pick their interpreter.
 requires-python = ">=3.11"
 license = { text = "MIT" }
-classifiers = ["Private :: Do Not Upload"]
+classifiers = [
+  # Hard stop: PyPI rejects any distribution carrying a "Private ::" classifier.
+  "Private :: Do Not Upload",
+]
 
-# Runtime only. Codegen tools (grpcio-tools, mypy-protobuf) never go here:
-# stubs are generated in this repo and committed (tests/test_packaging.py).
-# `grpcio` is required because every `_pb2_grpc.py` imports it at module scope.
+# The base install is the HTTP client and its helpers. Codegen tools
+# (grpcio-tools, mypy-protobuf) never go anywhere here: stubs are generated in
+# this repo and committed (tests/test_packaging.py).
 dependencies = [
     "httpx>=0.25.0,<1.0",
     "pydantic>=2.0,<3.0",
+]
+
+[project.optional-dependencies]
+# The gRPC transport and the contract (pkg_media.contract, .reasons, the stubs):
+# app backends on gRPC and the media server install it.
+grpc = [
     "protobuf>=7.35.1,<8",
     "grpcio>=1.84.0",
     # Rich errors: google.rpc.ErrorInfo in the status details (AD-10).
     "grpcio-status>=1.84.0",
     "googleapis-common-protos>=1.75.5",
 ]
-
-[project.optional-dependencies]
+# The resolve, grant and upload routers (pkg_media.integrations.fastapi).
 fastapi = ["fastapi>=0.100"]
 
 [dependency-groups]
@@ -44,6 +53,12 @@ dev = [
     "fastapi>=0.100",
     "build>=1.2",
     "hatchling",
+    "packaging",
+    # The grpc extra's packages, so the whole suite runs.
+    "protobuf>=7.35.1,<8",
+    "grpcio>=1.84.0",
+    "grpcio-status>=1.84.0",
+    "googleapis-common-protos>=1.75.5",
 ]
 # Separate from `dev` on purpose: nothing installs the compiler by accident.
 # `uv sync --all-groups` takes it (CI, and anyone running tools/generate.py).
@@ -54,6 +69,9 @@ codegen = [
 
 [tool.uv]
 default-groups = ["dev", "codegen"]
+
+[tool.hatch.version]
+path = "src/pkg_media/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/pkg_media"]

@@ -41,39 +41,63 @@ Links to `docs/…` point to the media library server repository
 
 ## Installation
 
-The package is installed from GitHub.
+The package is installed from this private GitHub repository, pinned to a
+release tag `v<version>` (installing needs read access to the repository; see
+[Install in Docker](#install-in-docker)):
 
 ```bash
-pip install "pkg-media @ git+https://github.com/fritill-team/saas_media_library_py_client.git"
-```
-
-With the optional FastAPI routers:
-
-```bash
-pip install "pkg-media[fastapi] @ git+https://github.com/fritill-team/saas_media_library_py_client.git"
+pip install "pkg-media[grpc,fastapi] @ git+https://github.com/fritill-team/saas_media_library_py_client.git@vX.Y.Z"
 ```
 
 With uv:
 
 ```bash
-uv add "pkg-media[fastapi] @ git+https://github.com/fritill-team/saas_media_library_py_client.git"
+uv add "pkg-media[grpc,fastapi] @ git+https://github.com/fritill-team/saas_media_library_py_client.git@vX.Y.Z"
 ```
 
-Pin a release in production. Every release is a tag named
-`pkg_media-v<version>`:
+The extras:
 
-```bash
-pip install "pkg-media @ git+https://github.com/fritill-team/saas_media_library_py_client.git@pkg_media-v0.20.0"
-```
+| Extra | Adds | Needed for |
+| --- | --- | --- |
+| (none) | `httpx` (≥ 0.25, < 1.0), `pydantic` 2 | the HTTP client, `AccessGate`, `AssetUrlCache`, upload helpers |
+| `grpc` | `grpcio`, `grpcio-status` (≥ 1.84), `protobuf` (≥ 7.35.1, < 8), `googleapis-common-protos` | `transport="grpc"`, `pkg_media.contract`, `pkg_media.reasons` (the media server installs it) |
+| `fastapi` | `fastapi` (≥ 0.100) | `pkg_media.integrations.fastapi` (the resolve and upload routers) |
+
+Without the `grpc` extra, `transport="grpc"` raises an `ImportError` naming
+it. No code generator is installed: the gRPC stubs ship generated.
 
 Releases before v0.26 were published as `saas-media-library` with tags
 `saas_media_library-v<version>`; from v0.26 the distribution is `pkg-media`,
-imported as `pkg_media`, with tags `pkg_media-v<version>`. See
+imported as `pkg_media`, with tags `v<version>`. See
 [From v0.26: `saas_media_library` is now `pkg_media`](#from-v026-saas_media_library-is-now-pkg_media).
 
-Dependencies: `httpx` (≥ 0.25, < 1.0), `pydantic` 2, `protobuf` (≥ 7.35.1,
-< 8) and `grpcio` (≥ 1.84). The `fastapi` extra adds `fastapi` (≥ 0.100).
-No code generator is installed: the gRPC stubs ship generated.
+### Install in Docker
+
+The repository is private, so a build needs a GitHub token with read access
+to it (a fine-grained token with *Contents: read*, or a deploy key over SSH)
+and `git` in the image. Pass the token as a BuildKit secret, never as an
+`ARG` or `ENV` (both stay in the image history):
+
+```dockerfile
+# syntax=docker/dockerfile:1
+RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
+RUN --mount=type=secret,id=gh_token \
+    GIT_CONFIG_COUNT=1 \
+    GIT_CONFIG_KEY_0="url.https://x-access-token:$(cat /run/secrets/gh_token)@github.com/.insteadOf" \
+    GIT_CONFIG_VALUE_0="https://github.com/" \
+    pip install "pkg-media[grpc,fastapi] @ git+https://github.com/fritill-team/saas_media_library_py_client.git@vX.Y.Z"
+```
+
+```bash
+docker build --secret id=gh_token,env=GH_TOKEN .
+```
+
+The `GIT_CONFIG_*` variables live only for that `RUN`, so the token reaches
+neither a layer nor `~/.gitconfig`. With `uv sync` from a lock file, the same
+`RUN --mount=type=secret…` prefix applies. In GitHub Actions, pass a token
+that can read this repository (the default `GITHUB_TOKEN` of another repo
+cannot), e.g. `secrets: gh_token=${{ secrets.MEDIA_CLIENT_READ_TOKEN }}` in
+`docker/build-push-action`.
 
 ## Concepts
 
@@ -2368,7 +2392,7 @@ method emits a `DeprecationWarning`. Replacement: `AccessGate`.
 The package was renamed and now also carries the media gRPC contract.
 
 - Install `pkg-media` instead of `saas-media-library` (same repository;
-  tags are `pkg_media-v<version>`), and replace `saas_media_library` with
+  tags are `v<version>`), and replace `saas_media_library` with
   `pkg_media` in imports: `from pkg_media import MediaLibraryClient`.
 - `client.assets.delivery_list`, `delivery_get` and `delivery_resolve` are
   gone: call `client.delivery.list`, `get` and `resolve`.
@@ -2377,8 +2401,9 @@ The package was renamed and now also carries the media gRPC contract.
   current server has `/manage/processing-options/*`.
 - The deprecated `client.policies` and `client.access` methods are unchanged
   (they still warn on every call).
-- New runtime dependencies: `protobuf`, `grpcio`, `grpcio-status` and
-  `googleapis-common-protos`.
+- The base install is still `httpx` and `pydantic`. The gRPC transport and
+  `pkg_media.contract` need the `grpc` extra (`protobuf`, `grpcio`,
+  `grpcio-status`, `googleapis-common-protos`); the routers need `fastapi`.
 - `X-Tenant` is no longer sent. Upgrade only once the media server ignores
   it (the tenancy-retirement release A1). `tenant_id` is optional and only
   scopes `AssetUrlCache` entries.
@@ -2633,12 +2658,16 @@ client adds `/v1/…` itself.
 
 ## Versioning and releases
 
-Releases are cut by hand from the Actions tab. `auto-release.yml` runs the
-tests and `tools/check_compat.py`, bumps the **minor** `version` in
-`pyproject.toml`, moves `proto/baseline.binpb` forward, commits both, tags
-`pkg_media-v<version>` and publishes a GitHub release with the wheel and
-sdist. `release.yml` releases a chosen version (it does not move the
-baseline). There is no separate changelog: the
+Releases are cut by hand from **Actions → Release → Run workflow** on `main`;
+[RELEASING.md](RELEASING.md) explains the inputs and how to choose the bump.
+The workflow computes the version from `__version__` in
+`src/pkg_media/__init__.py` (the single source; `pyproject.toml` reads it),
+refuses a tag that exists, runs `ci.yml` (tests, stubs current,
+`tools/check_compat.py`, packaging), writes `__version__`, moves
+`proto/baseline.binpb` forward, builds and verifies the wheel and sdist,
+commits, pushes the commit and the annotated tag `v<version>` atomically,
+publishes a private GitHub release with the artifacts and posts to Discord.
+There is no separate changelog: the
 [GitHub releases](https://github.com/fritill-team/saas_media_library_py_client/releases)
 and the commit history between tags describe each version.
 

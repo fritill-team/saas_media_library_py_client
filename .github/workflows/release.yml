@@ -1,73 +1,391 @@
-name: Release pkg_media (manual, no baseline write-back)
+name: Release
 
+# Manual, deliberate releases. You pick the bump; the workflow computes the
+# version, rewrites __version__, commits, tags, and publishes a private
+# GitHub Release. No hand-written tags, so tag and package cannot disagree.
+#
+# Modeled on pkg_audit's release.yml. pkg_media carries a wire contract
+# (fritill.media.v1): tools/check_compat.py gates it in ci.yml, and a release moves
+# proto/baseline.binpb forward in the release commit, so the next release is checked
+# against this one. Consumers pin an exact tag, so a release is the only way a change
+# reaches anyone; see RELEASING.md for choosing the bump.
 on:
   workflow_dispatch:
     inputs:
-      version:
-        description: Version to release (e.g. 0.1.1)
+      bump:
+        description: "Increment, graduate (prerelease -> final), or initial (first release, no increment)"
         required: true
+        type: choice
+        default: patch
+        options: [patch, minor, major, graduate, initial]
+      prerelease:
+        description: "Optional prerelease id, e.g. rc.1 (blank = final release)"
+        required: false
         type: string
+        default: ""
+      dry_run:
+        description: "Compute the version and stop. Nothing is committed, tagged, or published."
+        required: false
+        type: boolean
+        default: false
 
 permissions:
-  contents: write
+  contents: read
+
+# Never let two releases race: they would both bump from the same base.
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 jobs:
-  release:
+  # ---------------------------------------------------------------------
+  # 1. Work out the next version and prove it is safe to use, before
+  #    anything is written, committed, or published.
+  # ---------------------------------------------------------------------
+  plan:
+    name: Plan version
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.compute.outputs.version }}
+      tag: ${{ steps.compute.outputs.tag }}
+      current: ${{ steps.compute.outputs.current }}
+      prerelease: ${{ steps.compute.outputs.prerelease }}
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # need all tags to detect collisions
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Refuse to release from a non-default branch
+        # A release must be reproducible from main's history.
+        if: github.ref != 'refs/heads/main'
+        run: |
+          echo "::error::Releases must be dispatched from 'main' (got '${GITHUB_REF}')."
+          exit 1
+
+      - name: Compute next version
+        id: compute
+        env:
+          BUMP: ${{ inputs.bump }}
+          PRE: ${{ inputs.prerelease }}
+        run: |
+          set -euo pipefail
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import os, pathlib, re, sys
+
+          init = pathlib.Path("src/pkg_media/__init__.py")
+          text = init.read_text()
+
+          m = re.search(r'^__version__\s*=\s*["\']([^"\']+)["\']', text, re.M)
+          if not m:
+              print("::error::could not find __version__ in %s" % init, file=sys.stderr)
+              sys.exit(1)
+          current = m.group(1)
+
+          # Bump from the release core only, so 1.2.0-rc.1 -> patch -> 1.2.1.
+          core = re.match(r"^(\d+)\.(\d+)\.(\d+)", current)
+          if not core:
+              print(f"::error::current __version__ '{current}' is not SemVer", file=sys.stderr)
+              sys.exit(1)
+          major, minor, patch = (int(g) for g in core.groups())
+
+          bump = os.environ["BUMP"]
+          pre = os.environ.get("PRE", "").strip().lstrip("-")
+
+          if bump == "initial":
+              # Bootstrap: publish the version already in the file, without
+              # incrementing. Every new package starts at some declared
+              # version (0.1.0) that no arithmetic bump can reach — patch
+              # would jump straight to 0.1.1 and that version could never
+              # ship. Safety comes from the tag-collision check that runs
+              # after this step: if the tag already exists, 'initial' is
+              # rejected, so this cannot silently re-release or overwrite.
+              if pre:
+                  print(
+                      "::error::'initial' publishes __version__ exactly as "
+                      "declared; leave the prerelease input blank. To ship a "
+                      "prerelease of the first version, set it in __version__ "
+                      "itself.",
+                      file=sys.stderr,
+                  )
+                  sys.exit(1)
+              version = current
+              print(f"current={current}")
+              print(f"version={version}")
+              print(f"tag=v{version}")
+              print(f"prerelease={'true' if '-' in version else 'false'}")
+              sys.exit(0)
+
+          if bump == "graduate":
+              # Promote 1.2.0-rc.1 to the final 1.2.0. Without this, a
+              # prerelease could never ship as its own final version:
+              # bumping 1.2.0-rc.1 by patch yields 1.2.1, skipping 1.2.0.
+              if "-" not in current:
+                  print(
+                      f"::error::__version__ is '{current}', which is already a "
+                      "final release. 'graduate' only applies to a prerelease.",
+                      file=sys.stderr,
+                  )
+                  sys.exit(1)
+              if pre:
+                  print(
+                      "::error::'graduate' produces a final release; leave the "
+                      "prerelease input blank.",
+                      file=sys.stderr,
+                  )
+                  sys.exit(1)
+          elif bump == "major":
+              major, minor, patch = major + 1, 0, 0
+          elif bump == "minor":
+              minor, patch = minor + 1, 0
+          else:
+              patch += 1
+
+          version = f"{major}.{minor}.{patch}"
+
+          if pre:
+              # Same grammar the old tag guard enforced.
+              if not re.fullmatch(
+                  r"(0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)"
+                  r"(\.(0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*",
+                  pre,
+              ):
+                  print(f"::error::'{pre}' is not a valid SemVer prerelease id", file=sys.stderr)
+                  sys.exit(1)
+              version = f"{version}-{pre}"
+
+          print(f"current={current}")
+          print(f"version={version}")
+          print(f"tag=v{version}")
+          print(f"prerelease={'true' if pre else 'false'}")
+          PY
+
+      - name: Reject a version that already exists
+        env:
+          TAG: ${{ steps.compute.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
+            echo "::error::Tag ${TAG} already exists. A released version is immutable — pick a different bump."
+            exit 1
+          fi
+          echo "OK: ${TAG} is free."
+
+      - name: Summary
+        run: |
+          {
+            echo "### Release plan"
+            echo ""
+            echo "| | |"
+            echo "| --- | --- |"
+            echo "| Current | \`${{ steps.compute.outputs.current }}\` |"
+            echo "| Next | \`${{ steps.compute.outputs.version }}\` |"
+            echo "| Tag | \`${{ steps.compute.outputs.tag }}\` |"
+            echo "| Bump | \`${{ inputs.bump }}\` |"
+            echo "| Prerelease | \`${{ steps.compute.outputs.prerelease }}\` |"
+            echo "| Dry run | \`${{ inputs.dry_run }}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------------
+  # 2. Full test matrix, before anything is written. Reuses ci.yml so
+  #    release and PR runs can never drift apart.
+  # ---------------------------------------------------------------------
+  test:
+    name: Test
+    needs: plan
+    if: ${{ !inputs.dry_run }}
+    uses: ./.github/workflows/ci.yml
+    secrets: inherit
+
+  # ---------------------------------------------------------------------
+  # 3. Bump, commit, tag, build, and publish a PRIVATE GitHub Release.
+  #    There is deliberately no PyPI step: the package is private and
+  #    carries the Private :: Do Not Upload classifier.
+  #
+  #    Consumers install with:
+  #      pkg-media[grpc,fastapi] @ git+https://github.com/fritill-team/saas_media_library_py_client.git@vX.Y.Z
+  # ---------------------------------------------------------------------
+  release:
+    name: Bump, tag and publish
+    runs-on: ubuntu-latest
+    needs: [plan, test]
+    if: ${{ !inputs.dry_run }}
+    permissions:
+      contents: write # push the bump commit + tag, create the Release
+    steps:
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Validate version format
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Write the new version
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
         run: |
-          if ! [[ "${{ inputs.version }}" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z]+)?$ ]]; then
-            echo "Invalid version format: ${{ inputs.version }}" >&2
-            exit 1
+          set -euo pipefail
+          python - <<'PY'
+          import os, pathlib, re
+          version = os.environ["VERSION"]
+          init = pathlib.Path("src/pkg_media/__init__.py")
+          text = init.read_text()
+          new, n = re.subn(
+              r'^__version__\s*=\s*["\'][^"\']+["\']',
+              f'__version__ = "{version}"',
+              text,
+              count=1,
+              flags=re.M,
+          )
+          assert n == 1, "expected exactly one __version__ assignment"
+          init.write_text(new)
+          print(f"__version__ = {version}")
+          PY
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Move the proto baseline to this release
+        # check_compat passed in the test job; this release becomes what the next one is
+        # checked against. Same commit as the version bump.
+        run: uv run --frozen --only-group codegen python tools/generate.py --baseline
+
+      - name: Build distributions
+        run: |
+          # `packaging` is named explicitly, not left to arrive via twine's dependency
+          # tree: a dependency relied on but not declared breaks the day the package that
+          # happened to carry it drops it, and the step below that imports it runs after
+          # tests, build, and tag have already happened.
+          python -m pip install --upgrade pip build twine packaging
+          python -m build
+          python -m twine check dist/*
+
+      - name: Verify built artifacts carry the planned version
+        # Compares PARSED versions, not filenames. Python normalizes versions
+        # per PEP 440, so the SemVer tag v0.2.0-rc.1 legitimately produces an
+        # artifact named 0.2.0rc1. A string/glob match would reject every
+        # prerelease; Version() equality treats the two as equal.
+        env:
+          EXPECTED: ${{ needs.plan.outputs.version }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os, pathlib, sys, zipfile, email
+          from packaging.version import Version, InvalidVersion
+
+          expected = os.environ["EXPECTED"]
+          try:
+              want = Version(expected)
+          except InvalidVersion:
+              print(f"::error::planned version {expected!r} is not PEP 440 parseable")
+              sys.exit(1)
+
+          wheels = list(pathlib.Path("dist").glob("*.whl"))
+          sdists = list(pathlib.Path("dist").glob("*.tar.gz"))
+          if len(wheels) != 1 or len(sdists) != 1:
+              print(f"::error::expected 1 wheel + 1 sdist, got {len(wheels)} + {len(sdists)}")
+              sys.exit(1)
+
+          with zipfile.ZipFile(wheels[0]) as zf:
+              name = next(n for n in zf.namelist() if n.endswith(".dist-info/METADATA"))
+              built = Version(email.message_from_bytes(zf.read(name))["Version"])
+
+          if built != want:
+              print(f"::error::built version {built} != planned {want}")
+              sys.exit(1)
+
+          print(f"OK: planned {want} == built {built}")
+          print(f"  {wheels[0].name}")
+          print(f"  {sdists[0].name}")
+          PY
+
+      - name: Commit and tag
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+          TAG: ${{ needs.plan.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add src/pkg_media/__init__.py proto/baseline.binpb
+
+          # An 'initial' release writes the version already in the file (and the
+          # baseline may already match), so there may be nothing to commit and `git commit` would exit 1 and kill
+          # the job. Tag the existing HEAD instead.
+          if git diff --cached --quiet; then
+            echo "__version__ already reads ${VERSION}; tagging HEAD as-is."
+          else
+            git commit -m "release: ${TAG}"
           fi
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
+          git tag -a "${TAG}" -m "Release ${TAG}"
 
-      - name: Set up uv
-        uses: astral-sh/setup-uv@v6
+          # --atomic: the branch and the tag land together, or neither does.
+          # Without it a failed tag push leaves an untagged bump on main.
+          git push --atomic origin HEAD:main "refs/tags/${TAG}"
 
-      # Prefer auto-release.yml: this one does not move proto/baseline.binpb.
-      - name: Test and check compatibility
-        run: |
-          uv sync --all-groups --frozen
-          uv run pytest -q
-          uv run python tools/check_compat.py
-
-      - name: Build artifacts (sdist + wheel)
-        run: uv build
-
-      - name: Capture artifact names
-        id: artifacts
-        run: |
-          set -e
-          WHEEL=$(ls -1 dist/*.whl | head -n1 || true)
-          SDIST=$(ls -1 dist/*.tar.gz | head -n1 || true)
-          echo "wheel_name=$(basename "$WHEEL")" >> "$GITHUB_OUTPUT"
-          echo "sdist_name=$(basename "$SDIST")" >> "$GITHUB_OUTPUT"
-
-      - name: Create GitHub Release
+      - name: Create private GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: pkg_media-v${{ inputs.version }}
-          target_commitish: ${{ github.sha }}
-          name: pkg_media v${{ inputs.version }}
-          fail_on_unmatched_files: false
-          body: |
-            Install from the tag (no PyPI):
+          tag_name: ${{ needs.plan.outputs.tag }}
+          name: ${{ needs.plan.outputs.tag }}
+          files: dist/*
+          generate_release_notes: true
+          prerelease: ${{ needs.plan.outputs.prerelease == 'true' }}
 
-            pip install "git+https://github.com/${{ github.repository }}.git@pkg_media-v${{ inputs.version }}"
+  # ---------------------------------------------------------------------
+  # 4. Discord: one success message, one failure alert.
+  # ---------------------------------------------------------------------
+  notify-success:
+    name: Notify Discord (released)
+    runs-on: ubuntu-latest
+    needs: [plan, release]
+    if: ${{ success() && !inputs.dry_run }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/discord-notify
+        with:
+          webhook: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          title: "📦 pkg-media ${{ needs.plan.outputs.tag }} released"
+          color: "3066993" # green
+          url: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ needs.plan.outputs.tag }}
+          message: |
+            **`${{ needs.plan.outputs.current }}` → `${{ needs.plan.outputs.version }}`**
+            (`${{ inputs.bump }}`) is available as a private release.
+            Repo access is required to install (a GitHub token with read access).
 
-            Or install the wheel directly from this release (public repo):
+            ```
+            pip install "pkg-media[grpc,fastapi] @ git+https://github.com/fritill-team/saas_media_library_py_client.git@${{ needs.plan.outputs.tag }}"
+            ```
 
-            pip install "https://github.com/${{ github.repository }}/releases/download/pkg_media-v${{ inputs.version }}/${{ steps.artifacts.outputs.wheel_name }}"
-          files: |
-            dist/*
+            Released by ${{ github.actor }} ·
+            [Release notes](${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ needs.plan.outputs.tag }})
+
+  notify-failure:
+    name: Notify Discord (failed)
+    runs-on: ubuntu-latest
+    needs: [plan, test, release]
+    if: ${{ always() && !inputs.dry_run && contains(needs.*.result, 'failure') }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/discord-notify
+        with:
+          webhook: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          title: "🚨 Release of ${{ github.repository }} failed"
+          color: "15158332" # red
+          url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          message: |
+            Attempted bump `${{ inputs.bump }}` → `${{ needs.plan.outputs.version }}`.
+
+            | Job | Result |
+            | --- | --- |
+            | Plan | `${{ needs.plan.result }}` |
+            | Test | `${{ needs.test.result }}` |
+            | Release | `${{ needs.release.result }}` |
+
+            Triggered by ${{ github.actor }}.
