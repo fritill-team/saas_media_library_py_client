@@ -11,6 +11,13 @@
 // | reason | status | kind |
 // | --- | --- | --- |
 // | asset_not_found | NOT_FOUND | permanent |
+// | blob_not_found | NOT_FOUND | permanent |
+// | tenant_storage_not_found | NOT_FOUND | permanent |
+//
+// `blob_not_found`: the asset exists but its file does not (no blob, or the
+// blob was removed), so there is nothing to link to.
+// `tenant_storage_not_found`: media has no R2 storage configured for the
+// app (an operator fixes it; retrying does not help).
 //
 // ResolveDeliveryAssets never refuses an id: each item carries its status.
 

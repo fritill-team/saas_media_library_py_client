@@ -25,9 +25,12 @@ ones in common.proto:
 | unsupported_mime_type | INVALID_ARGUMENT | permanent |
 | invalid_processing_config | INVALID_ARGUMENT | permanent |
 | grants_not_configured | UNAVAILABLE | transient |
+| tenant_storage_not_found | NOT_FOUND | permanent |
 
 `grants_not_configured`: OpenSession could not sign the upload grant
 (media has no GRANT_SIGNING_SECRET); no session is left open.
+`tenant_storage_not_found`: OpenSession: media has no R2 storage configured for the
+app (an operator fixes it; retrying does not help).
 """
 
 from collections import abc as _abc

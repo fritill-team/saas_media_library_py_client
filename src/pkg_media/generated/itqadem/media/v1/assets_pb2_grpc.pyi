@@ -17,9 +17,12 @@ ones in common.proto:
 | deploy_uploading | FAILED_PRECONDITION | permanent |
 | scan_not_allowed | FAILED_PRECONDITION | permanent |
 | deploy_changed | FAILED_PRECONDITION | transient |
+| tenant_storage_not_found | NOT_FOUND | permanent |
 
 The deploy reasons are the ones /manage/assets/{id}/deploys already sends
 in `detail.reason`. `deploy_changed` is a concurrent deploy: call again.
+`tenant_storage_not_found`: media has no R2 storage configured for the
+app (an operator fixes it; retrying does not help).
 """
 
 from collections import abc as _abc

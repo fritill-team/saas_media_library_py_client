@@ -40,6 +40,8 @@ DEPLOY_FAILED = "deploy_failed"
 DEPLOY_UPLOADING = "deploy_uploading"
 SCAN_NOT_ALLOWED = "scan_not_allowed"
 DEPLOY_CHANGED = "deploy_changed"
+#: Assets, Uploads and Delivery: the app has no R2 storage configured.
+TENANT_STORAGE_NOT_FOUND = "tenant_storage_not_found"
 
 # ── Uploads ────────────────────────────────────────────────────────────
 SESSION_NOT_FOUND = "session_not_found"
@@ -57,6 +59,9 @@ GRANTS_NOT_CONFIGURED = "grants_not_configured"
 PERMALINK_NOT_FOUND = "permalink_not_found"
 INVALID_PERMALINK_NAME = "invalid_permalink_name"
 ASSET_NOT_PUBLIC = "asset_not_public"
+
+# ── Delivery ───────────────────────────────────────────────────────────
+BLOB_NOT_FOUND = "blob_not_found"
 
 _S = grpc.StatusCode
 
@@ -89,6 +94,7 @@ REFUSALS: Mapping[str, Mapping[str, grpc.StatusCode]] = MappingProxyType({
         DEPLOY_UPLOADING: _S.FAILED_PRECONDITION,
         SCAN_NOT_ALLOWED: _S.FAILED_PRECONDITION,
         DEPLOY_CHANGED: _S.FAILED_PRECONDITION,
+        TENANT_STORAGE_NOT_FOUND: _S.NOT_FOUND,
     }),
     methods.Uploads.SERVICE: _with_common({
         SESSION_NOT_FOUND: _S.NOT_FOUND,
@@ -101,6 +107,7 @@ REFUSALS: Mapping[str, Mapping[str, grpc.StatusCode]] = MappingProxyType({
         UNSUPPORTED_MIME_TYPE: _S.INVALID_ARGUMENT,
         INVALID_PROCESSING_CONFIG: _S.INVALID_ARGUMENT,
         GRANTS_NOT_CONFIGURED: _S.UNAVAILABLE,
+        TENANT_STORAGE_NOT_FOUND: _S.NOT_FOUND,
     }),
     methods.Grants.SERVICE: _with_common({
         GRANTS_NOT_CONFIGURED: _S.UNAVAILABLE,
@@ -113,6 +120,8 @@ REFUSALS: Mapping[str, Mapping[str, grpc.StatusCode]] = MappingProxyType({
     }),
     methods.Delivery.SERVICE: _with_common({
         ASSET_NOT_FOUND: _S.NOT_FOUND,
+        BLOB_NOT_FOUND: _S.NOT_FOUND,
+        TENANT_STORAGE_NOT_FOUND: _S.NOT_FOUND,
     }),
     methods.Processing.SERVICE: _with_common({}),
 })
