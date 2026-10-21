@@ -46,13 +46,13 @@ release tag `v<version>` (installing needs read access to the repository; see
 [Install in Docker](#install-in-docker)):
 
 ```bash
-pip install "pkg-media[grpc,fastapi] @ git+https://github.com/fritill-team/saas_media_library_py_client.git@vX.Y.Z"
+pip install "pkg-media[grpc,fastapi] @ git+https://github.com/Itqadem/pkg_media.git@vX.Y.Z"
 ```
 
 With uv:
 
 ```bash
-uv add "pkg-media[grpc,fastapi] @ git+https://github.com/fritill-team/saas_media_library_py_client.git@vX.Y.Z"
+uv add "pkg-media[grpc,fastapi] @ git+https://github.com/Itqadem/pkg_media.git@vX.Y.Z"
 ```
 
 The extras:
@@ -66,7 +66,8 @@ The extras:
 Without the `grpc` extra, `transport="grpc"` raises an `ImportError` naming
 it. No code generator is installed: the gRPC stubs ship generated.
 
-Releases before v0.26 were published as `saas-media-library` with tags
+Releases before v0.26 were published as `saas-media-library` from
+`fritill-team/saas_media_library_py_client`, with tags
 `saas_media_library-v<version>`; from v0.26 the distribution is `pkg-media`,
 imported as `pkg_media`, with tags `v<version>`. See
 [From v0.26: `saas_media_library` is now `pkg_media`](#from-v026-saas_media_library-is-now-pkg_media).
@@ -85,7 +86,7 @@ RUN --mount=type=secret,id=gh_token \
     GIT_CONFIG_COUNT=1 \
     GIT_CONFIG_KEY_0="url.https://x-access-token:$(cat /run/secrets/gh_token)@github.com/.insteadOf" \
     GIT_CONFIG_VALUE_0="https://github.com/" \
-    pip install "pkg-media[grpc,fastapi] @ git+https://github.com/fritill-team/saas_media_library_py_client.git@vX.Y.Z"
+    pip install "pkg-media[grpc,fastapi] @ git+https://github.com/Itqadem/pkg_media.git@vX.Y.Z"
 ```
 
 ```bash
@@ -2668,7 +2669,7 @@ refuses a tag that exists, runs `ci.yml` (tests, stubs current,
 commits, pushes the commit and the annotated tag `v<version>` atomically,
 publishes a private GitHub release with the artifacts and posts to Discord.
 There is no separate changelog: the
-[GitHub releases](https://github.com/fritill-team/saas_media_library_py_client/releases)
+[GitHub releases](https://github.com/Itqadem/pkg_media/releases)
 and the commit history between tags describe each version.
 
 `pkg_media.__version__` reports the installed version.

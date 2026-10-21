@@ -30,6 +30,10 @@ dependencies = [
     "pydantic>=2.0,<3.0",
 ]
 
+[project.urls]
+Repository = "https://github.com/Itqadem/pkg_media"
+Releases = "https://github.com/Itqadem/pkg_media/releases"
+
 [project.optional-dependencies]
 # The gRPC transport and the contract (pkg_media.contract, .reasons, the stubs):
 # app backends on gRPC and the media server install it.

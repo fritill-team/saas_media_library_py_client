@@ -206,7 +206,7 @@ jobs:
   #    carries the Private :: Do Not Upload classifier.
   #
   #    Consumers install with:
-  #      pkg-media[grpc,fastapi] @ git+https://github.com/fritill-team/saas_media_library_py_client.git@vX.Y.Z
+  #      pkg-media[grpc,fastapi] @ git+https://github.com/Itqadem/pkg_media.git@vX.Y.Z
   # ---------------------------------------------------------------------
   release:
     name: Bump, tag and publish
@@ -360,7 +360,7 @@ jobs:
             Repo access is required to install (a GitHub token with read access).
 
             ```
-            pip install "pkg-media[grpc,fastapi] @ git+https://github.com/fritill-team/saas_media_library_py_client.git@${{ needs.plan.outputs.tag }}"
+            pip install "pkg-media[grpc,fastapi] @ git+https://github.com/Itqadem/pkg_media.git@${{ needs.plan.outputs.tag }}"
             ```
 
             Released by ${{ github.actor }} ·

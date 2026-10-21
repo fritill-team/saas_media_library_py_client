@@ -85,7 +85,8 @@ extra (`grpc`, `fastapi`): every install line names them.
 Publishes `__version__` **exactly as declared**, with no increment. Use it
 once: for the first release under the `v<version>` tags (`v0.26.0`, the
 first release as `pkg-media`; earlier releases were tagged
-`saas_media_library-v<version>`). After that every release uses an
+`saas_media_library-v<version>` in the old `fritill-team/saas_media_library_py_client`
+repository; this repository, `Itqadem/pkg_media`, has no earlier tags). After that every release uses an
 arithmetic bump. The tag-collision check rejects `initial` once its tag
 exists, so a stray run is harmless.
 
@@ -123,6 +124,8 @@ prints a summary. Nothing is tested, committed, tagged or published.
 5. **Publish**: a **private** GitHub release with generated notes and the
    artifacts.
 6. **Notify**: posts success or failure to Discord (`DISCORD_WEBHOOK_URL`).
+   Without that secret the notify step logs a warning and passes: the release
+   still succeeds, silently.
 
 ## Rules
 
@@ -144,7 +147,7 @@ prints a summary. Nothing is tested, committed, tagged or published.
 Consumers install by pinning the exact tag:
 
 ```bash
-pip install "pkg-media[grpc,fastapi] @ git+https://github.com/fritill-team/saas_media_library_py_client.git@vX.Y.Z"
+pip install "pkg-media[grpc,fastapi] @ git+https://github.com/Itqadem/pkg_media.git@vX.Y.Z"
 ```
 
 Drop the extras a consumer does not use: `[grpc]` for the gRPC transport and
