@@ -62,7 +62,7 @@ class UploadsAPI:
     grant for it). ``upload_file`` and ``upload_part`` send bytes and need
     the HTTP transport: bytes never travel over gRPC. The other methods work
     on both transports (HTTP ``/v1/manage/uploads/sessions``, gRPC
-    ``fritill.media.v1.Uploads``).
+    ``itqadem.media.v1.Uploads``).
     """
 
     BASE = "/v1/manage/uploads/sessions"

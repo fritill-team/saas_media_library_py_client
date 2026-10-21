@@ -1,4 +1,4 @@
-"""``fritill.media.v1`` says what stories 7.7 and AD-10/AD-11 say.
+"""``itqadem.media.v1`` says what stories 7.7 and AD-10/AD-11 say.
 
 Read from the descriptors wherever they can answer (what protoc built is what
 both sides get); the `.proto` text is read only for claims about its comments:
@@ -17,7 +17,7 @@ from google.protobuf.descriptor import Descriptor, FieldDescriptor, ServiceDescr
 from pkg_media import contract, methods, reasons
 
 ROOT = Path(__file__).resolve().parents[1]
-PROTO_DIR = ROOT / "proto" / "fritill" / "media" / "v1"
+PROTO_DIR = ROOT / "proto" / "itqadem" / "media" / "v1"
 
 SERVICE_FILES = {
     "Assets": contract.assets_pb2,
@@ -41,7 +41,7 @@ SERVICES = _services()
 
 def test_the_six_services_and_nothing_else() -> None:
     assert sorted(s.full_name for s in SERVICES) == sorted(
-        f"fritill.media.v1.{name}" for name in SERVICE_FILES
+        f"itqadem.media.v1.{name}" for name in SERVICE_FILES
     )
     assert not contract.common_pb2.DESCRIPTOR.services_by_name
 
@@ -84,7 +84,7 @@ def test_each_method_says_whether_it_mutates(name: str) -> None:
     documented = {method: comment for comment, method in _RPC.findall(text)}
     for method in SERVICE_FILES[name].DESCRIPTOR.services_by_name[name].methods:
         comment = documented.get(method.name, "")
-        path = f"/fritill.media.v1.{name}/{method.name}"
+        path = f"/itqadem.media.v1.{name}/{method.name}"
         expected = "Mutating" if path in methods.MUTATING_METHODS else "Read-only"
         assert expected in comment, f"{path} is not documented as {expected}"
 
@@ -95,7 +95,7 @@ def _fields(message: Descriptor, seen: set[str]) -> list[FieldDescriptor]:
     seen.add(message.full_name)
     found = list(message.fields)
     for field in message.fields:
-        if field.type == FieldDescriptor.TYPE_MESSAGE and field.message_type.full_name.startswith("fritill."):
+        if field.type == FieldDescriptor.TYPE_MESSAGE and field.message_type.full_name.startswith("itqadem."):
             found.extend(_fields(field.message_type, seen))
     return found
 
@@ -125,9 +125,9 @@ def _documented(path: Path) -> dict[str, grpc.StatusCode]:
 @pytest.mark.parametrize("name", SERVICE_FILES)
 def test_every_refusal_is_documented_in_the_proto(name: str) -> None:
     documented = {**_documented(PROTO_DIR / "common.proto"), **_documented(PROTO_DIR / f"{name.lower()}.proto")}
-    declared = dict(reasons.REFUSALS[f"fritill.media.v1.{name}"])
+    declared = dict(reasons.REFUSALS[f"itqadem.media.v1.{name}"])
     assert documented == declared
-    assert f'ErrorInfo.domain = "fritill.media.v1.{name}"' in (PROTO_DIR / f"{name.lower()}.proto").read_text()
+    assert f'ErrorInfo.domain = "itqadem.media.v1.{name}"' in (PROTO_DIR / f"{name.lower()}.proto").read_text()
 
 
 def test_the_common_refusals_are_the_common_table() -> None:
@@ -163,7 +163,7 @@ def test_a_refusal_carries_its_domain_and_reason() -> None:
     status = contract.refusal_status(methods.Assets.SERVICE, reasons.ASSET_NOT_FOUND, "Asset not found")
     assert status.code is grpc.StatusCode.NOT_FOUND
     assert status.details == "Asset not found"
-    assert contract.error_info(_FailedCall(status)) == ("fritill.media.v1.Assets", "asset_not_found")
+    assert contract.error_info(_FailedCall(status)) == ("itqadem.media.v1.Assets", "asset_not_found")
 
 
 def test_an_undeclared_reason_cannot_be_sent() -> None:

@@ -1,4 +1,4 @@
-"""The ``fritill.media.v1`` contract: servicer base classes, stubs, messages
+"""The ``itqadem.media.v1`` contract: servicer base classes, stubs, messages
 and refusal helpers.
 
 The media server subclasses the servicers (thin: map in, call a use case, map
@@ -25,7 +25,7 @@ from google.protobuf import any_pb2
 from google.rpc import error_details_pb2, status_pb2
 from grpc_status import rpc_status
 
-from pkg_media.generated.fritill.media.v1 import (
+from pkg_media.generated.itqadem.media.v1 import (
     assets_pb2,
     common_pb2,
     delivery_pb2,
@@ -34,32 +34,32 @@ from pkg_media.generated.fritill.media.v1 import (
     processing_pb2,
     uploads_pb2,
 )
-from pkg_media.generated.fritill.media.v1.assets_pb2_grpc import (
+from pkg_media.generated.itqadem.media.v1.assets_pb2_grpc import (
     AssetsServicer,
     AssetsStub,
     add_AssetsServicer_to_server,
 )
-from pkg_media.generated.fritill.media.v1.delivery_pb2_grpc import (
+from pkg_media.generated.itqadem.media.v1.delivery_pb2_grpc import (
     DeliveryServicer,
     DeliveryStub,
     add_DeliveryServicer_to_server,
 )
-from pkg_media.generated.fritill.media.v1.grants_pb2_grpc import (
+from pkg_media.generated.itqadem.media.v1.grants_pb2_grpc import (
     GrantsServicer,
     GrantsStub,
     add_GrantsServicer_to_server,
 )
-from pkg_media.generated.fritill.media.v1.permalinks_pb2_grpc import (
+from pkg_media.generated.itqadem.media.v1.permalinks_pb2_grpc import (
     PermalinksServicer,
     PermalinksStub,
     add_PermalinksServicer_to_server,
 )
-from pkg_media.generated.fritill.media.v1.processing_pb2_grpc import (
+from pkg_media.generated.itqadem.media.v1.processing_pb2_grpc import (
     ProcessingServicer,
     ProcessingStub,
     add_ProcessingServicer_to_server,
 )
-from pkg_media.generated.fritill.media.v1.uploads_pb2_grpc import (
+from pkg_media.generated.itqadem.media.v1.uploads_pb2_grpc import (
     UploadsServicer,
     UploadsStub,
     add_UploadsServicer_to_server,
@@ -80,12 +80,12 @@ __all__ = [
 
 #: Service full name -> (servicer base class, registration function).
 SERVICERS = {
-    "fritill.media.v1.Assets": (AssetsServicer, add_AssetsServicer_to_server),
-    "fritill.media.v1.Uploads": (UploadsServicer, add_UploadsServicer_to_server),
-    "fritill.media.v1.Grants": (GrantsServicer, add_GrantsServicer_to_server),
-    "fritill.media.v1.Permalinks": (PermalinksServicer, add_PermalinksServicer_to_server),
-    "fritill.media.v1.Delivery": (DeliveryServicer, add_DeliveryServicer_to_server),
-    "fritill.media.v1.Processing": (ProcessingServicer, add_ProcessingServicer_to_server),
+    "itqadem.media.v1.Assets": (AssetsServicer, add_AssetsServicer_to_server),
+    "itqadem.media.v1.Uploads": (UploadsServicer, add_UploadsServicer_to_server),
+    "itqadem.media.v1.Grants": (GrantsServicer, add_GrantsServicer_to_server),
+    "itqadem.media.v1.Permalinks": (PermalinksServicer, add_PermalinksServicer_to_server),
+    "itqadem.media.v1.Delivery": (DeliveryServicer, add_DeliveryServicer_to_server),
+    "itqadem.media.v1.Processing": (ProcessingServicer, add_ProcessingServicer_to_server),
 }
 
 _DETAILS_KEY = "grpc-status-details-bin"

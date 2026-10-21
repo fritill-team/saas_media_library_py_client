@@ -1,6 +1,6 @@
-"""Wire paths of the ``fritill.media.v1`` methods.
+"""Wire paths of the ``itqadem.media.v1`` methods.
 
-One constant per method, ``/fritill.media.v1.<Service>/<Method>``: the key the
+One constant per method, ``/itqadem.media.v1.<Service>/<Method>``: the key the
 media server's access table and idempotency records use, and what interceptors
 see as ``handler_call_details.method``. ``tests/test_media_contract.py`` checks
 them against the generated descriptors.
@@ -12,52 +12,52 @@ one); the others are read-only. The client retries ``UNAVAILABLE`` for both
 
 from __future__ import annotations
 
-PACKAGE = "fritill.media.v1"
+PACKAGE = "itqadem.media.v1"
 
 
 class Assets:
-    SERVICE = "fritill.media.v1.Assets"
-    LIST_ASSETS = "/fritill.media.v1.Assets/ListAssets"
-    GET_ASSET = "/fritill.media.v1.Assets/GetAsset"
-    RESOLVE_ASSETS = "/fritill.media.v1.Assets/ResolveAssets"
-    DELETE_ASSET = "/fritill.media.v1.Assets/DeleteAsset"
-    UPDATE_ASSET_VISIBILITY = "/fritill.media.v1.Assets/UpdateAssetVisibility"
-    BULK_UPDATE_ASSET_VISIBILITY = "/fritill.media.v1.Assets/BulkUpdateAssetVisibility"
-    LIST_DEPLOYS = "/fritill.media.v1.Assets/ListDeploys"
-    ACTIVATE_DEPLOY = "/fritill.media.v1.Assets/ActivateDeploy"
+    SERVICE = "itqadem.media.v1.Assets"
+    LIST_ASSETS = "/itqadem.media.v1.Assets/ListAssets"
+    GET_ASSET = "/itqadem.media.v1.Assets/GetAsset"
+    RESOLVE_ASSETS = "/itqadem.media.v1.Assets/ResolveAssets"
+    DELETE_ASSET = "/itqadem.media.v1.Assets/DeleteAsset"
+    UPDATE_ASSET_VISIBILITY = "/itqadem.media.v1.Assets/UpdateAssetVisibility"
+    BULK_UPDATE_ASSET_VISIBILITY = "/itqadem.media.v1.Assets/BulkUpdateAssetVisibility"
+    LIST_DEPLOYS = "/itqadem.media.v1.Assets/ListDeploys"
+    ACTIVATE_DEPLOY = "/itqadem.media.v1.Assets/ActivateDeploy"
 
 
 class Uploads:
-    SERVICE = "fritill.media.v1.Uploads"
-    OPEN_SESSION = "/fritill.media.v1.Uploads/OpenSession"
-    GET_SESSION = "/fritill.media.v1.Uploads/GetSession"
-    FINALIZE_SESSION = "/fritill.media.v1.Uploads/FinalizeSession"
-    ABORT_SESSION = "/fritill.media.v1.Uploads/AbortSession"
+    SERVICE = "itqadem.media.v1.Uploads"
+    OPEN_SESSION = "/itqadem.media.v1.Uploads/OpenSession"
+    GET_SESSION = "/itqadem.media.v1.Uploads/GetSession"
+    FINALIZE_SESSION = "/itqadem.media.v1.Uploads/FinalizeSession"
+    ABORT_SESSION = "/itqadem.media.v1.Uploads/AbortSession"
 
 
 class Grants:
-    SERVICE = "fritill.media.v1.Grants"
-    ISSUE_GRANT = "/fritill.media.v1.Grants/IssueGrant"
+    SERVICE = "itqadem.media.v1.Grants"
+    ISSUE_GRANT = "/itqadem.media.v1.Grants/IssueGrant"
 
 
 class Permalinks:
-    SERVICE = "fritill.media.v1.Permalinks"
-    SET_PERMALINK = "/fritill.media.v1.Permalinks/SetPermalink"
-    GET_PERMALINK = "/fritill.media.v1.Permalinks/GetPermalink"
-    DELETE_PERMALINK = "/fritill.media.v1.Permalinks/DeletePermalink"
+    SERVICE = "itqadem.media.v1.Permalinks"
+    SET_PERMALINK = "/itqadem.media.v1.Permalinks/SetPermalink"
+    GET_PERMALINK = "/itqadem.media.v1.Permalinks/GetPermalink"
+    DELETE_PERMALINK = "/itqadem.media.v1.Permalinks/DeletePermalink"
 
 
 class Delivery:
-    SERVICE = "fritill.media.v1.Delivery"
-    LIST_DELIVERY_ASSETS = "/fritill.media.v1.Delivery/ListDeliveryAssets"
-    GET_DELIVERY_ASSET = "/fritill.media.v1.Delivery/GetDeliveryAsset"
-    RESOLVE_DELIVERY_ASSETS = "/fritill.media.v1.Delivery/ResolveDeliveryAssets"
+    SERVICE = "itqadem.media.v1.Delivery"
+    LIST_DELIVERY_ASSETS = "/itqadem.media.v1.Delivery/ListDeliveryAssets"
+    GET_DELIVERY_ASSET = "/itqadem.media.v1.Delivery/GetDeliveryAsset"
+    RESOLVE_DELIVERY_ASSETS = "/itqadem.media.v1.Delivery/ResolveDeliveryAssets"
 
 
 class Processing:
-    SERVICE = "fritill.media.v1.Processing"
-    GET_PROCESSING_SCHEMA = "/fritill.media.v1.Processing/GetProcessingSchema"
-    GET_PROCESSING_PIPELINES = "/fritill.media.v1.Processing/GetProcessingPipelines"
+    SERVICE = "itqadem.media.v1.Processing"
+    GET_PROCESSING_SCHEMA = "/itqadem.media.v1.Processing/GetProcessingSchema"
+    GET_PROCESSING_PIPELINES = "/itqadem.media.v1.Processing/GetProcessingPipelines"
 
 
 SERVICES = (Assets, Uploads, Grants, Permalinks, Delivery, Processing)

@@ -1,0 +1,127 @@
+// Shared messages of the media contract, and the refusals every service sends.
+//
+// Conventions (architecture spine, AD-10/AD-11):
+// - Unary methods only. File bytes never travel over gRPC: browsers upload
+//   parts to media's HTTP endpoints with an upload grant.
+// - Ids are UUID strings; times are google.protobuf.Timestamp.
+// - Kinds, statuses, visibilities and download types are strings with the
+//   HTTP API's values (e.g. kind "image", visibility "restricted"), so a value
+//   a newer server adds never breaks an older client.
+// - `optional` marks fields whose absence means something (JSON null on HTTP).
+// - The service credential travels in `authorization` metadata and the
+//   idempotency key in `idempotency-key` metadata; neither is ever a field.
+// - Changes are additive or reserved; tools/check_compat.py gates releases.
+//
+// Errors: every refusal is a status with google.rpc.ErrorInfo, whose `domain`
+// is the full name of the service that refused (e.g. "itqadem.media.v1.Assets")
+// and whose `reason` is the HTTP API's `detail.reason` for the same refusal.
+// HTTP status -> gRPC status: 400/422 INVALID_ARGUMENT, 401 UNAUTHENTICATED,
+// 403 PERMISSION_DENIED, 404 NOT_FOUND, 409/410 FAILED_PRECONDITION,
+// 429 RESOURCE_EXHAUSTED, 503 UNAVAILABLE, anything else INTERNAL.
+// Clients retry only UNAVAILABLE, and only read-only or idempotency-keyed calls.
+//
+// Common refusals, sent by every service (in its own domain):
+//
+// | reason | status | kind |
+// | --- | --- | --- |
+// | credential_missing | UNAUTHENTICATED | permanent |
+// | credential_rejected | UNAUTHENTICATED | permanent |
+// | permission_denied | PERMISSION_DENIED | permanent |
+// | invalid_argument | INVALID_ARGUMENT | permanent |
+// | idempotency_key_required | INVALID_ARGUMENT | permanent |
+// | idempotency_key_reused | FAILED_PRECONDITION | permanent |
+// | rate_limited | RESOURCE_EXHAUSTED | transient |
+// | unavailable | UNAVAILABLE | transient |
+// | internal_error | INTERNAL | permanent |
+//
+// `idempotency_key_required`: a mutating method was called without the
+// `idempotency-key` metadata. `idempotency_key_reused`: the key was already
+// used by this caller for this method with a different request.
+// `unavailable`: media or its storage cannot serve the call right now.
+
+syntax = "proto3";
+
+package itqadem.media.v1;
+
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+
+// One variant of a rendition (e.g. a 1080p stream, an en-US subtitle).
+message RenditionVariant {
+  string name = 1;
+  string entrypoint = 2;
+  optional string locale = 3;
+  optional int32 width = 4;
+  optional int32 height = 5;
+  optional int32 bitrate_kbps = 6;
+  optional double frame_rate = 7;
+  optional int32 channels = 8;
+  repeated string blob_ids = 9;
+  google.protobuf.Struct extras = 10;
+  optional string preview_url = 11;
+  optional string preview_url_type = 12;
+  optional int32 preview_url_expires_in = 13;
+}
+
+// A processed rendition of an asset (HLS, thumbnail, MP4, subtitle...).
+message Rendition {
+  string id = 1;
+  string rendition_type = 2;
+  string entrypoint = 3;
+  optional string storage_prefix = 4;
+  repeated string blob_ids = 5;
+  repeated RenditionVariant variants = 6;
+  optional double duration_seconds = 7;
+  optional int32 pages = 8;
+  optional int32 channels = 9;
+  string status = 10;
+  google.protobuf.Struct extras = 11;
+  google.protobuf.Timestamp created_at = 12;
+  google.protobuf.Timestamp updated_at = 13;
+  optional string preview_url = 14;
+  optional string preview_url_type = 15;
+  optional int32 preview_url_expires_in = 16;
+}
+
+// An asset as /manage returns it. The deprecated resource policy id is not
+// part of the contract.
+message Asset {
+  string id = 1;
+  string kind = 2;
+  optional string title = 3;
+  string original_filename = 4;
+  string mime_type = 5;
+  int64 size_bytes = 6;
+  string hash_sha256 = 7;
+  string status = 8;
+  string visibility = 9;
+  google.protobuf.Timestamp created_at = 10;
+  optional string blob_id = 11;
+  // The upload session that created the asset; proves where it came from.
+  optional string upload_session_id = 12;
+  repeated Rendition renditions = 13;
+  optional string preview_url = 14;
+  optional string preview_url_type = 15;
+  optional int32 preview_url_expires_in = 16;
+  optional string hls_url = 17;
+  optional string dash_url = 18;
+  optional int32 stream_url_expires_in = 19;
+}
+
+// Processing settings for one upload.
+message ProcessingConfig {
+  // Processor name -> options. Unset: no step options.
+  google.protobuf.Struct step_options = 1;
+  bool use_filename_as_asset_id = 2;
+  bool enable_transcription = 3;
+}
+
+// A media grant (`mlg_…`) as issued. The service hands `grant` to the browser,
+// which sends `Authorization: Bearer <grant>` to media's HTTP API.
+message Grant {
+  string grant = 1;
+  string grant_id = 2;
+  repeated string scopes = 3;
+  int32 expires_in = 4;
+  google.protobuf.Timestamp expires_at = 5;
+}

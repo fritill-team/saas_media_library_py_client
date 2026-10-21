@@ -32,7 +32,7 @@ they cannot disagree. The single source of truth is `__version__` in
 
 ## Choosing the bump
 
-`pkg_media` carries two surfaces: the **wire contract** (`fritill.media.v1`,
+`pkg_media` carries two surfaces: the **wire contract** (`itqadem.media.v1`,
 in `proto/`) that the media server implements and every service calls, and
 the **Python API** app backends import. Consumers pin an exact tag, so a
 mistake reaches them only when they adopt it, but then quietly. When

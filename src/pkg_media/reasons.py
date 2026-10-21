@@ -1,4 +1,4 @@
-"""Refusal reasons of the ``fritill.media.v1`` contract (AD-10).
+"""Refusal reasons of the ``itqadem.media.v1`` contract (AD-10).
 
 A refusal is a gRPC status carrying ``google.rpc.ErrorInfo(domain, reason)``:
 ``domain`` is the full name of the service that refused, ``reason`` one of the

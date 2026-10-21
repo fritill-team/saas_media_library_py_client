@@ -19,7 +19,7 @@ _NO_RESULT_ERROR = "The media library returned no result for this asset"
 
 class DeliveryAPI:
     """Delivery links (HTTP ``/delivery/assets``, gRPC
-    ``fritill.media.v1.Delivery``): slim assets with download URLs.
+    ``itqadem.media.v1.Delivery``): slim assets with download URLs.
 
     A service caller also gets links for RESTRICTED assets; the consuming app
     decides which of its users may receive them.

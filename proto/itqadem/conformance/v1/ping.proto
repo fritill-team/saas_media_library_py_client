@@ -1,0 +1,19 @@
+// The trivial proto every estate proto package carries, so the generate /
+// check_compat / release path can be exercised without touching a real seam.
+// Nothing serves it in production.
+
+syntax = "proto3";
+
+package itqadem.conformance.v1;
+
+service Conformance {
+  rpc Ping(PingRequest) returns (PingResponse);
+}
+
+message PingRequest {
+  string nonce = 1;
+}
+
+message PingResponse {
+  string nonce = 1;
+}

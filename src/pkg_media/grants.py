@@ -87,7 +87,7 @@ def grant_profile_payload(profile: Union[UploadProfile, Mapping[str, Any]]) -> D
 
 class GrantsAPI:
     """Issue media grants (HTTP ``POST /manage/grants``, gRPC
-    ``fritill.media.v1.Grants``). Needs a service caller."""
+    ``itqadem.media.v1.Grants``). Needs a service caller."""
 
     BASE = "/v1/manage/grants"
 

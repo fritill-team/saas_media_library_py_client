@@ -2,7 +2,7 @@
 
 `pkg_media` (distribution `pkg-media`, formerly `saas-media-library`) is the
 Python client for the ITQ media library, and the home of its gRPC contract
-(`fritill.media.v1`: protos, committed stubs, servicer base classes, wire
+(`itqadem.media.v1`: protos, committed stubs, servicer base classes, wire
 paths and error reasons). The
 media library stores, processes and serves your files. Your backend keeps the
 rules: what may be uploaded, who may open what, and which browser may do
@@ -122,7 +122,7 @@ the upload router.
 
 ### HTTP or gRPC
 
-Backend services call media over gRPC (`fritill.media.v1`, see
+Backend services call media over gRPC (`itqadem.media.v1`, see
 [The gRPC contract](#the-grpc-contract-proto)) or HTTP, with the same client
 methods. Browsers always use HTTP: uploads with a media grant, and reads
 through your service's own [media router](#the-media-router). File bytes
@@ -1648,7 +1648,7 @@ MediaLibraryError                 status_code, grpc_status, reason, domain, body
 `reason` is the refusal's reason: the HTTP body's `detail.reason`, or the
 gRPC status's `google.rpc.ErrorInfo.reason` (the same strings; constants in
 `pkg_media.reasons`, for example `reasons.DEPLOY_DELETED`). `domain` is the
-refusing gRPC service (`fritill.media.v1.Assets`…). `status_code` and `body`
+refusing gRPC service (`itqadem.media.v1.Assets`…). `status_code` and `body`
 are set over HTTP, `grpc_status` over gRPC. The message is the response's
 `detail` or the status details. `UploadRejected` sets its own `reason`.
 They survive pickling, for example across process pools.
@@ -2676,8 +2676,8 @@ and the commit history between tags describe each version.
 
 ### The gRPC contract (`proto/`)
 
-The `fritill.media.v1` protos live in `proto/fritill/media/v1/` (one file per
-service), next to `proto/fritill/conformance/v1/ping.proto`, which only
+The `itqadem.media.v1` protos live in `proto/itqadem/media/v1/` (one file per
+service), next to `proto/itqadem/conformance/v1/ping.proto`, which only
 exercises the tooling. The generated stubs in `src/pkg_media/generated/`
 are committed, together with `descriptor_set.binpb`; consumers never run a
 code generator. After changing a `.proto`:
@@ -2699,7 +2699,7 @@ The package exports what both sides need:
   `google.rpc.ErrorInfo(domain=<service full name>, reason)`) and
   `error_info(rpc_error)`.
 - `pkg_media.methods`: every method's wire path
-  (`methods.Assets.GET_ASSET == "/fritill.media.v1.Assets/GetAsset"`),
+  (`methods.Assets.GET_ASSET == "/itqadem.media.v1.Assets/GetAsset"`),
   `MUTATING_METHODS` (they need the `idempotency-key` metadata) and
   `READ_ONLY_METHODS`.
 - `pkg_media.reasons`: the reason constants, `REFUSALS` (each service's

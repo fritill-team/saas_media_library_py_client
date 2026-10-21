@@ -1,5 +1,5 @@
 """The generated stubs import inside this distribution, never from a
-top-level `fritill` package (which no consumer has installed)."""
+top-level `itqadem` package (which no consumer has installed)."""
 
 from __future__ import annotations
 
@@ -18,20 +18,20 @@ def test_no_generated_file_imports_a_top_level_fritill_package() -> None:
         f"{stub.relative_to(ROOT)}:{lineno}: {line.strip()}"
         for stub in sorted([*GENERATED.rglob("*.py"), *GENERATED.rglob("*.pyi")])
         for lineno, line in enumerate(stub.read_text().splitlines(), start=1)
-        if line.strip().startswith(("import fritill", "from fritill"))
+        if line.strip().startswith(("import itqadem", "from itqadem"))
     ]
     assert not offenders, "the import rewrite in tools/generate.py did not fire:\n  " + "\n  ".join(offenders)
 
 
 def test_the_three_import_spellings_are_rewritten() -> None:
-    assert generate.rewrite_imports("from fritill.media.v1 import assets_pb2 as x\n") == (
-        "from pkg_media.generated.fritill.media.v1 import assets_pb2 as x\n"
+    assert generate.rewrite_imports("from itqadem.media.v1 import assets_pb2 as x\n") == (
+        "from pkg_media.generated.itqadem.media.v1 import assets_pb2 as x\n"
     )
-    assert generate.rewrite_imports("import fritill_pb2 as x\n") == (
-        "from pkg_media.generated import fritill_pb2 as x\n"
+    assert generate.rewrite_imports("import itqadem_pb2 as x\n") == (
+        "from pkg_media.generated import itqadem_pb2 as x\n"
     )
-    assert generate.rewrite_imports("import fritill.media.v1.assets_pb2\n") == (
-        "import pkg_media.generated.fritill.media.v1.assets_pb2\n"
+    assert generate.rewrite_imports("import itqadem.media.v1.assets_pb2\n") == (
+        "import pkg_media.generated.itqadem.media.v1.assets_pb2\n"
     )
 
 
@@ -53,7 +53,7 @@ def test_every_generated_directory_is_a_real_package() -> None:
 
 
 def test_the_conformance_stubs_import() -> None:
-    from pkg_media.generated.fritill.conformance.v1 import ping_pb2, ping_pb2_grpc
+    from pkg_media.generated.itqadem.conformance.v1 import ping_pb2, ping_pb2_grpc
 
     assert ping_pb2.PingRequest(nonce="x").nonce == "x"
     assert hasattr(ping_pb2_grpc, "ConformanceStub")

@@ -224,7 +224,7 @@ def test_a_refusal_exposes_its_reason_and_domain(client, fake) -> None:
     with pytest.raises(NotFoundError) as excinfo:
         client.uploads.get_session(uuid4())
     assert excinfo.value.reason == reasons.SESSION_NOT_FOUND
-    assert excinfo.value.domain == "fritill.media.v1.Uploads"
+    assert excinfo.value.domain == "itqadem.media.v1.Uploads"
     assert str(excinfo.value) == "Upload session not found"
 
 

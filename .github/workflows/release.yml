@@ -5,7 +5,7 @@ name: Release
 # GitHub Release. No hand-written tags, so tag and package cannot disagree.
 #
 # Modeled on pkg_audit's release.yml. pkg_media carries a wire contract
-# (fritill.media.v1): tools/check_compat.py gates it in ci.yml, and a release moves
+# (itqadem.media.v1): tools/check_compat.py gates it in ci.yml, and a release moves
 # proto/baseline.binpb forward in the release commit, so the next release is checked
 # against this one. Consumers pin an exact tag, so a release is the only way a change
 # reaches anyone; see RELEASING.md for choosing the bump.

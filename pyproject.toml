@@ -1,5 +1,5 @@
 # pkg_media: the media library's client (HTTP and gRPC transports), its consumer
-# helpers, and the fritill.media.v1 gRPC contract (protos, committed stubs,
+# helpers, and the itqadem.media.v1 gRPC contract (protos, committed stubs,
 # servicer base classes, wire-path and reason constants). The media server
 # installs it for the contract; app backends install it for the client.
 
@@ -12,7 +12,7 @@ name = "pkg-media"
 # Single source of truth: __version__ in src/pkg_media/__init__.py, rewritten by
 # .github/workflows/release.yml and read here by [tool.hatch.version].
 dynamic = ["version"]
-description = "Client, helpers and gRPC contract (fritill.media.v1) for the ITQ media library"
+description = "Client, helpers and gRPC contract (itqadem.media.v1) for the ITQ media library"
 readme = "README.md"
 # A package floor, not a service runtime: consumers pick their interpreter.
 requires-python = ">=3.11"
@@ -81,7 +81,7 @@ path = "src/pkg_media/__init__.py"
 packages = ["src/pkg_media"]
 
 [tool.hatch.build.targets.sdist]
-include = ["src/pkg_media", "proto/fritill", "README.md", "pyproject.toml"]
+include = ["src/pkg_media", "proto/itqadem", "README.md", "pyproject.toml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

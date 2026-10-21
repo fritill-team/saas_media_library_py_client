@@ -1,0 +1,59 @@
+// Grants: short-lived, scoped media grants (`mlg_…`) for a service's users.
+//
+// The service decides what its user may do, then asks media for a grant and
+// hands it to the browser, which uses it on media's HTTP API (uploads today).
+// Only a service caller may issue grants.
+//
+// Refusals (ErrorInfo.domain = "itqadem.media.v1.Grants"), besides the common
+// ones in common.proto:
+//
+// | reason | status | kind |
+// | --- | --- | --- |
+// | grants_not_configured | UNAVAILABLE | transient |
+//
+// `grants_not_configured`: media has no GRANT_SIGNING_SECRET.
+
+syntax = "proto3";
+
+package itqadem.media.v1;
+
+import "itqadem/media/v1/common.proto";
+
+service Grants {
+  // Issue a grant. Mutating (a replay with the same idempotency key
+  // re-issues the grant).
+  rpc IssueGrant(IssueGrantRequest) returns (IssueGrantResponse);
+}
+
+// What a grant's uploads create. The browser cannot change any of it.
+message GrantUploadProfile {
+  string kind = 1;
+  // Unset: "private".
+  optional string visibility = 2;
+  ProcessingConfig processing_config = 3;
+  optional string collection_name = 4;
+  // Declared MIME types the upload may use ("image/*" matches a whole type).
+  // Empty: any.
+  repeated string allowed_mime_types = 5;
+  // Upper bound for the session's expected size; when set, the size is required.
+  optional int64 max_size_bytes = 6;
+}
+
+message IssueGrantRequest {
+  // "upload" | "read" | "update" | "delete" | "process" | "renditions" | "manage:*".
+  repeated string scopes = 1;
+  // The assets the grant covers (read/update/delete/process/renditions); at most 500.
+  repeated string asset_ids = 2;
+  // Upload sessions the grant may continue; at most 100.
+  repeated string session_ids = 3;
+  // Lets the grant create upload sessions with this profile.
+  GrantUploadProfile profile = 4;
+  // The app's user reference, recorded for audit, never checked.
+  optional string subject = 5;
+  // Unset: media's default (600 s); at most its GRANT_MAX_TTL.
+  optional int32 ttl_seconds = 6;
+}
+
+message IssueGrantResponse {
+  Grant grant = 1;
+}

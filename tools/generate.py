@@ -12,12 +12,12 @@ generated here and committed, never by a consumer or during the wheel build.
 Two fixes are applied to protoc's output:
 
 1. Imports of other generated modules are re-rooted under ``pkg_media.generated``.
-   protoc writes ``from fritill.media.v1 import assets_pb2``, which resolves
+   protoc writes ``from itqadem.media.v1 import assets_pb2``, which resolves
    only when the generated tree is on ``sys.path`` (true in this checkout,
    false in every consumer).
 2. An ``__init__.py`` is written in every generated directory, so the stubs
    never rely on namespace packages (which would merge with any other
-   distribution shipping a top-level ``fritill``).
+   distribution shipping a top-level ``itqadem``).
 
 Plain ``generate.py`` never touches ``proto/baseline.binpb``; only
 ``--baseline`` does (see tools/check_compat.py).
@@ -39,12 +39,12 @@ BASELINE = PROTO_DIR / "baseline.binpb"
 
 _GENERATED_ROOT = "pkg_media.generated"
 
-# `from fritill.media.v1 import assets_pb2 as x` (package with several segments).
-_FROM_IMPORT = re.compile(r"^from (fritill[\w.]*) import (\w+_pb2) as (\w+)$", re.MULTILINE)
-# `import fritill_pb2 as x` (a proto at the root package).
-_PLAIN_IMPORT = re.compile(r"^import (fritill[\w.]*_pb2) as (\w+)$", re.MULTILINE)
-# mypy-protobuf's `.pyi` spelling: `import fritill.media.v1.assets_pb2`.
-_DOTTED_IMPORT = re.compile(r"^import (fritill\.[\w.]*_pb2)$", re.MULTILINE)
+# `from itqadem.media.v1 import assets_pb2 as x` (package with several segments).
+_FROM_IMPORT = re.compile(r"^from (itqadem[\w.]*) import (\w+_pb2) as (\w+)$", re.MULTILINE)
+# `import itqadem_pb2 as x` (a proto at the root package).
+_PLAIN_IMPORT = re.compile(r"^import (itqadem[\w.]*_pb2) as (\w+)$", re.MULTILINE)
+# mypy-protobuf's `.pyi` spelling: `import itqadem.media.v1.assets_pb2`.
+_DOTTED_IMPORT = re.compile(r"^import (itqadem\.[\w.]*_pb2)$", re.MULTILINE)
 
 # The mypy-protobuf plugins, found beside the running interpreter so the script
 # works however it is started (the stubs-current test spawns it directly).
@@ -108,7 +108,7 @@ def generate() -> None:
 
 
 def rewrite_imports(text: str) -> str:
-    """Re-root every `fritill.…` stub import under `pkg_media.generated`."""
+    """Re-root every `itqadem.…` stub import under `pkg_media.generated`."""
     text = _FROM_IMPORT.sub(
         lambda m: f"from {_GENERATED_ROOT}.{m.group(1)} import {m.group(2)} as {m.group(3)}",
         text,

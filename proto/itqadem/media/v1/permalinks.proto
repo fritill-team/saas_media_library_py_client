@@ -1,0 +1,64 @@
+// Permalinks: stable public addresses ({media base}/p/{name}) for public assets.
+//
+// Store the name, not the URL; re-point the name when the asset changes.
+// Only a service caller may manage permalinks.
+//
+// Refusals (ErrorInfo.domain = "itqadem.media.v1.Permalinks"), besides the
+// common ones in common.proto:
+//
+// | reason | status | kind |
+// | --- | --- | --- |
+// | permalink_not_found | NOT_FOUND | permanent |
+// | asset_not_found | NOT_FOUND | permanent |
+// | invalid_permalink_name | INVALID_ARGUMENT | permanent |
+// | asset_not_public | INVALID_ARGUMENT | permanent |
+
+syntax = "proto3";
+
+package itqadem.media.v1;
+
+import "google/protobuf/timestamp.proto";
+
+service Permalinks {
+  // Create a name or re-point it at another public asset. Mutating.
+  rpc SetPermalink(SetPermalinkRequest) returns (SetPermalinkResponse);
+  // Read-only.
+  rpc GetPermalink(GetPermalinkRequest) returns (GetPermalinkResponse);
+  // Remove a name (its edge copy is purged). Mutating.
+  rpc DeletePermalink(DeletePermalinkRequest) returns (DeletePermalinkResponse);
+}
+
+message Permalink {
+  string name = 1;
+  string asset_id = 2;
+  // {media base}/p/{name}, built by media on every response.
+  string url = 3;
+  google.protobuf.Timestamp created_at = 4;
+  google.protobuf.Timestamp updated_at = 5;
+}
+
+message SetPermalinkRequest {
+  // Segments of letters, digits, '.', '_' or '-' (not starting with '.'),
+  // joined by '/'; at most 255 characters.
+  string name = 1;
+  // A public asset; one not ready yet is accepted.
+  string asset_id = 2;
+}
+
+message SetPermalinkResponse {
+  Permalink permalink = 1;
+}
+
+message GetPermalinkRequest {
+  string name = 1;
+}
+
+message GetPermalinkResponse {
+  Permalink permalink = 1;
+}
+
+message DeletePermalinkRequest {
+  string name = 1;
+}
+
+message DeletePermalinkResponse {}

@@ -1,0 +1,165 @@
+// Assets: manage assets (the HTTP API's /manage/assets).
+//
+// Refusals (ErrorInfo.domain = "itqadem.media.v1.Assets"), besides the common
+// ones in common.proto:
+//
+// | reason | status | kind |
+// | --- | --- | --- |
+// | asset_not_found | NOT_FOUND | permanent |
+// | not_a_web_app | NOT_FOUND | permanent |
+// | deploy_not_found | NOT_FOUND | permanent |
+// | invalid_asset_state | FAILED_PRECONDITION | permanent |
+// | deploy_deleted | FAILED_PRECONDITION | permanent |
+// | deploy_failed | FAILED_PRECONDITION | permanent |
+// | deploy_uploading | FAILED_PRECONDITION | permanent |
+// | scan_not_allowed | FAILED_PRECONDITION | permanent |
+// | deploy_changed | FAILED_PRECONDITION | transient |
+//
+// The deploy reasons are the ones /manage/assets/{id}/deploys already sends
+// in `detail.reason`. `deploy_changed` is a concurrent deploy: call again.
+
+syntax = "proto3";
+
+package itqadem.media.v1;
+
+import "itqadem/media/v1/common.proto";
+import "google/protobuf/timestamp.proto";
+
+service Assets {
+  // Assets with full metadata, paged. Read-only.
+  rpc ListAssets(ListAssetsRequest) returns (ListAssetsResponse);
+  // One asset with its renditions and preview links. Read-only.
+  rpc GetAsset(GetAssetRequest) returns (GetAssetResponse);
+  // Up to 100 assets at once, one item per id. Read-only.
+  rpc ResolveAssets(ResolveAssetsRequest) returns (ResolveAssetsResponse);
+  // Delete an asset and its records. Mutating.
+  rpc DeleteAsset(DeleteAssetRequest) returns (DeleteAssetResponse);
+  // Change one asset's visibility (no bytes move). Mutating.
+  rpc UpdateAssetVisibility(UpdateAssetVisibilityRequest) returns (UpdateAssetVisibilityResponse);
+  // Change the visibility of up to 500 assets; failures are per item. Mutating.
+  rpc BulkUpdateAssetVisibility(BulkUpdateAssetVisibilityRequest) returns (BulkUpdateAssetVisibilityResponse);
+  // A web app's deploys, newest first. Read-only.
+  rpc ListDeploys(ListDeploysRequest) returns (ListDeploysResponse);
+  // Make a retained deploy the live one (roll back a web app). Mutating.
+  rpc ActivateDeploy(ActivateDeployRequest) returns (ActivateDeployResponse);
+}
+
+message ListAssetsRequest {
+  optional string kind = 1;
+  optional string status = 2;
+  optional string query = 3;
+  // 1-based; 0 means 1.
+  int32 page = 4;
+  // 1 to 100; 0 means 10.
+  int32 page_size = 5;
+}
+
+message ListAssetsResponse {
+  repeated Asset items = 1;
+  int64 total = 2;
+  int32 page = 3;
+  int32 page_size = 4;
+}
+
+message GetAssetRequest {
+  string asset_id = 1;
+}
+
+message GetAssetResponse {
+  Asset asset = 1;
+}
+
+message ResolveAssetsRequest {
+  // 1 to 100 ids.
+  repeated string asset_ids = 1;
+}
+
+message ResolveAssetsItem {
+  string asset_id = 1;
+  // "ok" | "not_found" | "error".
+  string status = 2;
+  // Set when status is "ok".
+  Asset asset = 3;
+  optional string error = 4;
+}
+
+message ResolveAssetsResponse {
+  repeated ResolveAssetsItem items = 1;
+  int32 total = 2;
+}
+
+message DeleteAssetRequest {
+  string asset_id = 1;
+}
+
+message DeleteAssetResponse {}
+
+message UpdateAssetVisibilityRequest {
+  string asset_id = 1;
+  string visibility = 2;
+}
+
+message UpdateAssetVisibilityResponse {
+  Asset asset = 1;
+}
+
+message BulkUpdateAssetVisibilityRequest {
+  // 1 to 500 ids.
+  repeated string asset_ids = 1;
+  string visibility = 2;
+}
+
+message BulkUpdateAssetVisibilityItem {
+  string asset_id = 1;
+  bool ok = 2;
+  optional bool changed = 3;
+  // "not_found" | "forbidden" | "internal_error" when ok is false.
+  optional string error = 4;
+}
+
+message BulkUpdateAssetVisibilityResponse {
+  repeated BulkUpdateAssetVisibilityItem items = 1;
+  int32 updated = 2;
+  int32 failed = 3;
+}
+
+message WebAppDeploy {
+  string id = 1;
+  // "live" | "ready" | "uploading" | "failed" | "deleted"...
+  string status = 2;
+  google.protobuf.Timestamp created_at = 3;
+  bool is_live = 4;
+  optional string blob_id = 5;
+  optional string scan_status = 6;
+  int32 file_count = 7;
+}
+
+message ListDeploysRequest {
+  string asset_id = 1;
+  // 1 to 200; 0 means 50.
+  int32 limit = 2;
+  int32 offset = 3;
+}
+
+message ListDeploysResponse {
+  optional string live_deploy_id = 1;
+  repeated WebAppDeploy deploys = 2;
+  int32 limit = 3;
+  int32 offset = 4;
+  // Unset on the last page.
+  optional int32 next_offset = 5;
+}
+
+message ActivateDeployRequest {
+  string asset_id = 1;
+  string deploy_id = 2;
+}
+
+// The first page of the deploy list after the change.
+message ActivateDeployResponse {
+  optional string live_deploy_id = 1;
+  repeated WebAppDeploy deploys = 2;
+  int32 limit = 3;
+  int32 offset = 4;
+  optional int32 next_offset = 5;
+}

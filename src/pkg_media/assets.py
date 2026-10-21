@@ -27,7 +27,7 @@ class BulkVisibilityResult:
 
 
 class AssetsAPI:
-    """Manage assets (HTTP ``/manage/assets``, gRPC ``fritill.media.v1.Assets``).
+    """Manage assets (HTTP ``/manage/assets``, gRPC ``itqadem.media.v1.Assets``).
     Delivery links are ``client.delivery``."""
 
     MANAGE_BASE = "/v1/manage/assets"

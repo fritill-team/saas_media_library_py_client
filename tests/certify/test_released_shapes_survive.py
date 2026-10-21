@@ -19,7 +19,7 @@ F = descriptor_pb2.FieldDescriptorProto
 def _set(*, fields=(("nonce", 1, F.TYPE_STRING, F.LABEL_OPTIONAL),), reserved=(), methods=("Ping",),
          enum_values=(("A", 0), ("B", 1))) -> descriptor_pb2.FileDescriptorSet:
     fds = descriptor_pb2.FileDescriptorSet()
-    file = fds.file.add(name="t.proto", package="fritill.test.v1", syntax="proto3")
+    file = fds.file.add(name="t.proto", package="itqadem.test.v1", syntax="proto3")
     message = file.message_type.add(name="Req")
     for name, number, type_, label in fields:
         message.field.add(name=name, number=number, type=type_, label=label)
@@ -30,7 +30,7 @@ def _set(*, fields=(("nonce", 1, F.TYPE_STRING, F.LABEL_OPTIONAL),), reserved=()
         enum.value.add(name=name, number=number)
     service = file.service.add(name="Svc")
     for method in methods:
-        service.method.add(name=method, input_type=".fritill.test.v1.Req", output_type=".fritill.test.v1.Req")
+        service.method.add(name=method, input_type=".itqadem.test.v1.Req", output_type=".itqadem.test.v1.Req")
     return fds
 
 

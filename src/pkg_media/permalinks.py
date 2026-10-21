@@ -70,7 +70,7 @@ def permalink_url(media_base_url: str, name: str) -> str:
 
 
 class PermalinksAPI:
-    """HTTP ``/manage/permalinks/{name}``, gRPC ``fritill.media.v1.Permalinks``.
+    """HTTP ``/manage/permalinks/{name}``, gRPC ``itqadem.media.v1.Permalinks``.
     Needs a service caller.
 
     Names are validated before any request (``ValueError``), so a name such

@@ -68,7 +68,7 @@ def wheel_names(tmp_path_factory: pytest.TempPathFactory) -> list[str]:
 
 def test_the_wheel_ships_the_stubs_and_the_descriptor_set(wheel_names: list[str]) -> None:
     assert "pkg_media/generated/descriptor_set.binpb" in wheel_names
-    assert "pkg_media/generated/fritill/conformance/v1/ping_pb2.py" in wheel_names
+    assert "pkg_media/generated/itqadem/conformance/v1/ping_pb2.py" in wheel_names
 
 
 def test_every_generated_module_ships_a_type_stub(wheel_names: list[str]) -> None:

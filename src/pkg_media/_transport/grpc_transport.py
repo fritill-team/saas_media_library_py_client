@@ -1,4 +1,4 @@
-"""The gRPC transport: ``fritill.media.v1`` over a ``grpc.aio`` channel.
+"""The gRPC transport: ``itqadem.media.v1`` over a ``grpc.aio`` channel.
 
 - Credential: ``authorization: Bearer <token>`` metadata on every call, from
   the token source (``ClientCredentials`` for a Keycloak client). When media
