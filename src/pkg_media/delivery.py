@@ -3,10 +3,6 @@ from __future__ import annotations
 from typing import Any, Dict, Iterable, List, Optional
 from uuid import UUID
 
-import httpx
-from pydantic import BaseModel
-
-from pkg_media._http import raise_for_status
 from pkg_media.cache import AssetUrlCache, _as_uuid
 from pkg_media.models import (
     AssetKind,
@@ -21,18 +17,12 @@ _THUMBNAIL_RENDITION_TYPE = "thumbnail"
 _NO_RESULT_ERROR = "The media library returned no result for this asset"
 
 
-class _ResolveResponse(BaseModel):
-    """Body of ``POST /delivery/assets/resolve``; a body without ``items``
-    fails validation instead of raising ``KeyError``."""
-
-    items: List[DeliveryBatchResolveResult]
-
-
 class DeliveryAPI:
-    """Client-facing delivery endpoints (slim responses with download URLs).
+    """Delivery links (HTTP ``/delivery/assets``, gRPC
+    ``fritill.media.v1.Delivery``): slim assets with download URLs.
 
-    With a service token, ``resolve`` also returns links for RESTRICTED
-    assets; the consuming app decides which of its users may receive them.
+    A service caller also gets links for RESTRICTED assets; the consuming app
+    decides which of its users may receive them.
     """
 
     BASE = "/v1/delivery/assets"
@@ -42,12 +32,12 @@ class DeliveryAPI:
     MAX_GRANTS = 10
     GRANTS_HEADER = "X-Media-Grants"
 
-    def __init__(self, http: httpx.Client, *, tenant_id: Optional[str] = None):
-        self._http = http
-        # Scopes ``resolve(..., cache=...)`` entries (the X-Tenant sent).
+    def __init__(self, transport: Any, *, tenant_id: Optional[str] = None):
+        self._transport = transport
+        # Scopes ``resolve(..., cache=...)`` entries; never sent.
         self.tenant_id = tenant_id
 
-    def list(
+    async def list(
         self,
         *,
         kind: Optional[AssetKind | str] = None,
@@ -64,21 +54,17 @@ class DeliveryAPI:
             params["status"] = str(status)
         if query is not None:
             params["query"] = query
-        resp = self._http.get(self.BASE, params=params)
-        raise_for_status(resp)
-        return PaginatedDeliveryAssets.model_validate(resp.json())
+        return await self._transport.list_delivery_assets(params)
 
-    def get(self, asset_id: UUID | str, *, grants: Optional[Iterable[str]] = None) -> DeliveryAsset:
+    async def get(self, asset_id: UUID | str, *, grants: Optional[Iterable[str]] = None) -> DeliveryAsset:
         """Get a single asset with its download URL and renditions.
 
         ``grants``: media grants (``mlg_…``) that may list the asset, as for
         ``resolve``.
         """
-        resp = self._http.get(f"{self.BASE}/{asset_id}", headers=_grant_headers(grants))
-        raise_for_status(resp)
-        return DeliveryAsset.model_validate(resp.json())
+        return await self._transport.get_delivery_asset(str(asset_id), _grant_tokens(grants))
 
-    def resolve(
+    async def resolve(
         self,
         asset_ids: Iterable[UUID | str],
         *,
@@ -111,30 +97,29 @@ class DeliveryAPI:
         of them resolves as for its owning service (PRIVATE and RESTRICTED
         included); the others as for this client's own token. Sent as
         ``X-Media-Grants``; the server ignores invalid or expired grants
-        instead of failing the batch. Not combinable with ``cache``.
+        instead of failing the batch. Not combinable with ``cache``. Over gRPC
+        they travel as the ``x-media-grants`` metadata.
         """
-        headers = _grant_headers(grants)
-        if headers and cache is not None:
+        tokens = _grant_tokens(grants)
+        if tokens and cache is not None:
             raise ValueError("resolve() takes either cache or grants, not both")
         if cache is None:
-            return self._resolve([str(a) for a in asset_ids], headers)
+            return await self._resolve([str(a) for a in asset_ids], tokens)
 
         ids = [_as_uuid(a) for a in asset_ids]
         found = cache.get_many(ids, tenant_id=self.tenant_id)
         missing = [a for a in dict.fromkeys(ids) if a not in found]
         if missing:
-            fresh = self._resolve([str(a) for a in missing])
+            fresh = await self._resolve([str(a) for a in missing])
             cache.put_many(fresh, tenant_id=self.tenant_id)
             found.update((item.asset_id, item) for item in fresh)
         return [found[a] if a in found else _no_result(a) for a in ids]
 
-    def _resolve(self, ids: List[str], headers: Optional[Dict[str, str]] = None) -> List[DeliveryBatchResolveResult]:
+    async def _resolve(self, ids: List[str], grants: Optional[List[str]] = None) -> List[DeliveryBatchResolveResult]:
         results: List[DeliveryBatchResolveResult] = []
         for start in range(0, len(ids), self.RESOLVE_BATCH_SIZE):
-            payload = {"assetIds": ids[start:start + self.RESOLVE_BATCH_SIZE]}
-            resp = self._http.post(f"{self.BASE}/resolve", json=payload, headers=headers or None)
-            raise_for_status(resp)
-            results.extend(_ResolveResponse.model_validate(resp.json()).items)
+            batch = ids[start:start + self.RESOLVE_BATCH_SIZE]
+            results.extend(await self._transport.resolve_delivery_assets(batch, grants or []))
         return results
 
 
@@ -153,17 +138,17 @@ def thumbnail_url(result: DeliveryBatchResolveResult) -> Optional[str]:
     return result.thumbnail_url
 
 
-def _grant_headers(grants: Optional[Iterable[str]]) -> Dict[str, str]:
-    """``X-Media-Grants`` for ``grants`` (``MediaGrant`` objects or ``mlg_…`` strings)."""
+def _grant_tokens(grants: Optional[Iterable[str]]) -> List[str]:
+    """The distinct ``mlg_…`` tokens of ``grants`` (``MediaGrant`` objects or strings)."""
     if grants is None:
-        return {}
+        return []
     if isinstance(grants, str):
         grants = [grants]
     tokens = [getattr(g, "grant", g) for g in grants]
     tokens = [t for t in dict.fromkeys(tokens) if t]
     if len(tokens) > DeliveryAPI.MAX_GRANTS:
         raise ValueError(f"at most {DeliveryAPI.MAX_GRANTS} grants per request")
-    return {DeliveryAPI.GRANTS_HEADER: ", ".join(tokens)} if tokens else {}
+    return tokens
 
 
 def _no_result(asset_id: UUID) -> DeliveryBatchResolveResult:

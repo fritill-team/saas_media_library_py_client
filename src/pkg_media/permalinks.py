@@ -13,10 +13,9 @@ import re
 from datetime import datetime
 from uuid import UUID
 
-import httpx
-from pydantic import BaseModel, Field
+from typing import Any
 
-from pkg_media._http import raise_for_status
+from pydantic import BaseModel, Field
 
 #: Longest valid name, as on the server.
 MAX_PERMALINK_NAME_LENGTH = 255
@@ -71,7 +70,8 @@ def permalink_url(media_base_url: str, name: str) -> str:
 
 
 class PermalinksAPI:
-    """``/manage/permalinks/{name}``. Needs a client with the tenant's service token.
+    """HTTP ``/manage/permalinks/{name}``, gRPC ``fritill.media.v1.Permalinks``.
+    Needs a service caller.
 
     Names are validated before any request (``ValueError``), so a name such
     as ``../x`` never reaches another endpoint.
@@ -79,10 +79,10 @@ class PermalinksAPI:
 
     BASE = "/v1/manage/permalinks"
 
-    def __init__(self, http: httpx.Client):
-        self._http = http
+    def __init__(self, transport: Any):
+        self._transport = transport
 
-    def set(self, name: str, asset_id: UUID | str) -> Permalink:
+    async def set(self, name: str, asset_id: UUID | str) -> Permalink:
         """Create ``name`` or re-point it at ``asset_id``.
 
         Re-pointing purges the old edge copy; the same asset again changes
@@ -95,20 +95,12 @@ class PermalinksAPI:
             ValidationError: the asset is not public (422).
             AuthenticationError: not a service token (401/403).
         """
-        resp = self._http.put(self._path(name), json={"assetId": str(asset_id)})
-        raise_for_status(resp)
-        return Permalink.model_validate(resp.json())
+        return await self._transport.set_permalink(validate_permalink_name(name), str(asset_id))
 
-    def get(self, name: str) -> Permalink:
+    async def get(self, name: str) -> Permalink:
         """The permalink ``name``; ``NotFoundError`` when there is none."""
-        resp = self._http.get(self._path(name))
-        raise_for_status(resp)
-        return Permalink.model_validate(resp.json())
+        return await self._transport.get_permalink(validate_permalink_name(name))
 
-    def delete(self, name: str) -> None:
+    async def delete(self, name: str) -> None:
         """Remove ``name`` (its edge copy is purged); ``NotFoundError`` when unknown."""
-        resp = self._http.delete(self._path(name))
-        raise_for_status(resp)
-
-    def _path(self, name: str) -> str:
-        return f"{self.BASE}/{validate_permalink_name(name)}"
+        await self._transport.delete_permalink(validate_permalink_name(name))

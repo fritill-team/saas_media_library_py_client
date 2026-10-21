@@ -10,7 +10,9 @@ what. This client gives you the pieces for each: upload profiles, delivery
 links with a cache, an access gate for restricted content, and short-lived
 media grants for browsers.
 
-Requires Python 3.11 or later. There is no async client.
+Requires Python 3.11 or later. `MediaClient` (sync) and `AsyncMediaClient`
+(async) have the same methods over HTTP or gRPC; switching transports is a
+configuration change.
 
 Links to `docs/…` point to the media library server repository
 (`fritill-team/saas_media_library`, private: ask for access).
@@ -84,13 +86,23 @@ Your backend ──────────────────────�
   Browser ──── media grant (mlg_…) ──────────────┘   delivery gate (R2) ──▶ file bytes
 ```
 
-### Tenants and `X-Tenant`
+### One app, no `X-Tenant`
 
-Every asset belongs to one tenant. The client sends the tenant on every
-request in the `X-Tenant` header, from the `tenant_id` you pass to
-`MediaLibraryClient`. The server looks the tenant up **by its slug** (for
-example `acme`), so pass the slug, not the UUID. Ids of assets, sessions and
-grants are only valid within their tenant.
+The media library serves one app (itqadem). The client sends no `X-Tenant`
+header any more; the server ignores it from the tenancy-retirement release
+(A1) on. Upgrade services to this client only once that release is live.
+`tenant_id` is still accepted: it only scopes
+[`AssetUrlCache`](#cache-links-with-asseturlcache) entries and is echoed by
+the upload router.
+
+### HTTP or gRPC
+
+Backend services call media over gRPC (`fritill.media.v1`, see
+[The gRPC contract](#the-grpc-contract-proto)) or HTTP, with the same client
+methods. Browsers always use HTTP: uploads with a media grant, and reads
+through your service's own [media router](#the-media-router). File bytes
+never travel over gRPC, so `uploads.upload_file` and `upload_part` need the
+HTTP transport.
 
 ### Who is calling
 
@@ -165,7 +177,7 @@ with its defaults; no step waits for input. The asset's `status` moves from
 ```python
 import os
 
-from pkg_media import AssetKind, MediaLibraryClient, UploadProfile, Visibility
+from pkg_media import AssetKind, MediaClient, UploadProfile, Visibility
 
 AVATAR = UploadProfile(
     name="avatar",
@@ -175,19 +187,23 @@ AVATAR = UploadProfile(
     max_size_bytes=2_000_000,
 )
 
-with MediaLibraryClient(
-    base_url="https://media.example.com",     # API root, without /v1
-    tenant_id="acme",                         # the tenant's slug
-    token=os.environ["MEDIA_LIBRARY_TOKEN"],  # the tenant's service token
+with MediaClient(
+    transport="grpc",
+    target="media-library-grpc.media-library:50051",
+    token_url="https://sso.example.com/realms/Itqadem/protocol/openid-connect/token",
+    client_id="courses-service",                     # your service's Keycloak client
+    client_secret=os.environ["MEDIA_CLIENT_SECRET"],
 ) as client:
-    uploaded = client.uploads.upload_file("avatar.png", profile=AVATAR)
-    [item] = client.delivery.resolve([uploaded.asset_id])
-    print(item.status, item.asset.download_url)
+    opened = client.uploads.open_session(mime_type="image/png", profile=AVATAR,
+                                         expected_size_bytes=120_000, subject="user-42")
+    # Hand opened.grant.grant to the browser; it uploads the parts over HTTP.
+    [item] = client.delivery.resolve([asset_id])
+    print(item.status, item.asset.download_url if item.asset else None)
 ```
 
-`upload_file` checks the file against the profile, uploads it in parts and
-returns once the media library has the file. Processing then runs in the
-background.
+Over HTTP the same code runs with `transport="http", base_url=...`, and
+`client.uploads.upload_file("avatar.png", profile=AVATAR)` uploads a file
+from the backend itself.
 
 ## Configure the client
 
@@ -196,90 +212,109 @@ background.
 ```python
 import os
 
-from pkg_media import MediaLibraryClient
+from pkg_media import AsyncMediaClient, MediaClient
 
-client = MediaLibraryClient(
-    base_url="https://media.example.com",
-    tenant_id="acme",
-    token=os.environ["MEDIA_LIBRARY_TOKEN"],
-    timeout=30.0,
+# gRPC, as a Keycloak client of the Itqadem realm (audience media-api)
+client = MediaClient(
+    transport="grpc",
+    target="media-library-grpc.media-library:50051",
+    token_url="https://sso.example.com/realms/Itqadem/protocol/openid-connect/token",
+    client_id="courses-service",
+    client_secret=os.environ["MEDIA_CLIENT_SECRET"],
 )
+
+# HTTP, with the same credentials or a media service token
+client = MediaClient(transport="http", base_url="https://media.example.com",
+                     token=os.environ["MEDIA_LIBRARY_TOKEN"])
+
+# Async code: the same arguments, awaitable methods
+aclient = AsyncMediaClient(transport="grpc", target=..., token_url=..., client_id=..., client_secret=...)
+asset = await aclient.assets.get(asset_id)
 ```
 
 | Argument | Default | Meaning |
 |---|---|---|
-| `base_url` | required | The API root, **without** `/v1`: the client's paths start with `/v1/…`. A trailing `/` is removed |
-| `tenant_id` | required | Sent as `X-Tenant`. The server resolves it by the tenant's **slug** |
-| `token` | `None` | Sent as `Authorization: Bearer <token>`. Use the tenant's service token on a backend |
-| `timeout` | `30.0` | Seconds, for the client's own `httpx.Client` |
-| `http_client` | `None` | An `httpx.Client` to use instead. See below |
+| `transport` | `"http"` | `"http"` or `"grpc"` |
+| `base_url` | — | HTTP: the API root, **without** `/v1` |
+| `target` | — | gRPC: `host:port` of media's grpc role (in-cluster h2c) |
+| `token_url`, `client_id`, `client_secret` | `None` | Keycloak client credentials: a token is fetched, cached and refreshed 30 s before it expires (`ClientCredentials` for more control, passed as `credentials=`) |
+| `token` | `None` | A fixed bearer token instead (e.g. a media service token, `ml_live_…`) |
+| `tenant_id` | `None` | Never sent; scopes `AssetUrlCache` entries |
+| `timeout` | `30.0` | Seconds per request (HTTP) or call deadline (gRPC) |
+| `retries` | `2` | gRPC: retries of a call answered `UNAVAILABLE` |
+| `secure` | `False` | gRPC: TLS instead of plaintext h2c |
+| `http_client` | `None` | HTTP: your own `httpx.AsyncClient`. See below |
+| `channel` | `None` | gRPC: your own `grpc.aio.Channel` |
 
-`client.tenant_id` returns the tenant it was created with.
+The credential goes in `Authorization: Bearer …` (HTTP) or the
+`authorization` metadata (gRPC). Over gRPC, every mutating call carries an
+`idempotency-key` metadata, kept across its retries, and only `UNAVAILABLE`
+is retried. When media rejects a token (`UNAUTHENTICATED`), the client
+fetches a new one once.
 
-The client has one attribute per API:
+`MediaClient` runs an `AsyncMediaClient` on a private event-loop thread, so
+it is safe to share between threads (e.g. FastAPI's threadpool). In async
+code use `AsyncMediaClient` directly. `MediaLibraryClient(base_url,
+tenant_id=None, token=None)` is `MediaClient` over HTTP with the signature
+of earlier releases.
+
+Each client has one attribute per API:
 
 | Attribute | Class | For |
 |---|---|---|
-| `client.uploads` | `UploadsAPI` | Upload sessions and `upload_file` |
+| `client.uploads` | `UploadsAPI` | Upload sessions, `open_session`, `upload_file` (HTTP) |
 | `client.processing` | `ProcessingOptionsAPI` | Kinds, pipelines and step options |
 | `client.assets` | `AssetsAPI` | Manage assets: get, list, delete, visibility |
 | `client.delivery` | `DeliveryAPI` | Download and preview links |
 | `client.grants` | `GrantsAPI` | Media grants for browsers |
 | `client.permalinks` | `PermalinksAPI` | Stable public addresses for public assets |
-| `client.policies` | `ResourcePoliciesAPI` | Deprecated: resource policies |
-| `client.access` | `AssetAccessAPI` | Deprecated: per-user access grants |
+| `client.policies` | `ResourcePoliciesAPI` | Deprecated, HTTP only, `MediaClient` only: resource policies |
+| `client.access` | `AssetAccessAPI` | Deprecated, HTTP only, `MediaClient` only: per-user access grants |
 
-### Use your own `httpx.Client`
+### Use your own `httpx.AsyncClient`
 
-Pass `http_client` for proxies, retries, custom transports or connection
-limits. It is used **as is**: the client does not add `base_url`, `X-Tenant`,
-`Authorization` or the timeout to it, so set them yourself.
+Pass `http_client` (an `httpx.AsyncClient`) for proxies, custom transports
+or connection limits. The client adds its credential to each request; set
+`base_url` and the timeout on it yourself.
 
 ```python
 import httpx
 
-http = httpx.Client(
+http = httpx.AsyncClient(
     base_url="https://media.example.com",
-    headers={
-        "X-Tenant": "acme",
-        "Authorization": f"Bearer {os.environ['MEDIA_LIBRARY_TOKEN']}",
-    },
     timeout=httpx.Timeout(30.0, connect=5.0),
-    transport=httpx.HTTPTransport(retries=3),  # retries failed connections only
+    transport=httpx.AsyncHTTPTransport(retries=3),  # retries failed connections only
 )
-custom_client = MediaLibraryClient(base_url="https://media.example.com", tenant_id="acme", http_client=http)
+custom_client = MediaClient(base_url="https://media.example.com", token=..., http_client=http)
 ```
 
-`close()` does not close a client you passed in; close it yourself.
+`close()` does not close a client you passed in. A sync `httpx.Client` is
+refused (`TypeError`).
 
 ### Change the token
 
-`set_token` replaces the `Authorization` header for every later request, on
-whichever `httpx.Client` the client uses:
+`set_token` replaces a fixed `token` for every later request (with client
+credentials, tokens are renewed by themselves):
 
 ```python
 client.set_token(os.environ["MEDIA_LIBRARY_TOKEN"])
 ```
 
-The header is shared by every thread using the client. If the new token
-belongs to a different principal, `clear()` any
+If the new token belongs to a different principal, `clear()` any
 [`AssetUrlCache`](#cache-links-with-asseturlcache) it filled.
 
 ### Close the client
 
-Use the client as a context manager, or call `close()` when done:
+Use the client as a context manager, or call `close()` (`await
+aclose()` for `AsyncMediaClient`) when done; it stops the client's loop
+thread and closes its connections or channel.
 
 ```python
-with MediaLibraryClient(base_url="https://media.example.com", tenant_id="acme",
-                        token=os.environ["MEDIA_LIBRARY_TOKEN"]) as short_lived:
-    short_lived.processing.get_pipelines()
-
-custom_client.close()
-http.close()
+with MediaClient(transport="grpc", target=..., token_url=..., client_id=..., client_secret=...) as client:
+    client.processing.get_pipelines()
 ```
 
-Create one client per process and tenant, and reuse it: it keeps its
-connections open.
+Create one client per process and reuse it: it keeps its connections open.
 
 ## Upload files
 
@@ -1538,33 +1573,36 @@ refreshes their grants: see
 ## Handle errors
 
 Every exception the client raises for a media library response inherits from
-`MediaLibraryError`:
+`MediaLibraryError`. Both transports raise one class per gRPC status; each
+subclasses the class earlier releases raised for the same failure, so
+existing `except` clauses keep working:
 
 ```
-MediaLibraryError            status_code, body, reason
-├── AuthenticationError      401, 403
-├── NotFoundError            404
-├── ConflictError            409
-├── ValidationError          422
-│   └── UploadRejected       a profile check failed (no request sent); reason
-└── ServerError              5xx
+MediaLibraryError                 status_code, grpc_status, reason, domain, body
+├── AuthenticationError
+│   ├── UnauthenticatedError      UNAUTHENTICATED     HTTP 401
+│   └── PermissionDeniedError     PERMISSION_DENIED   HTTP 403
+├── NotFoundError                 NOT_FOUND           HTTP 404
+├── ConflictError
+│   └── FailedPreconditionError   FAILED_PRECONDITION HTTP 409, 410
+├── ValidationError
+│   ├── InvalidArgumentError      INVALID_ARGUMENT    HTTP 400, 422
+│   └── UploadRejected            a profile check failed (no request sent); reason
+├── ResourceExhaustedError        RESOURCE_EXHAUSTED  HTTP 429
+└── ServerError
+    ├── UnavailableError          UNAVAILABLE         HTTP 503
+    ├── DeadlineExceededError     DEADLINE_EXCEEDED   (gRPC)
+    ├── UnimplementedError        UNIMPLEMENTED       (gRPC)
+    └── InternalError             INTERNAL            HTTP 500 and other 5xx
 ```
 
-All of them carry `status_code` (the HTTP status, or `None`) and `body` (the
-parsed JSON body, or its text). The message is the response's `detail`.
-`reason` is the response's `detail.reason` when the server sends one (for
-example the [web-app deploy](#roll-back-a-web-app) routes), else `None`;
-`UploadRejected` sets its own. They
-survive pickling, for example across process pools.
-
-| HTTP status | Exception |
-|---|---|
-| 401, 403 | `AuthenticationError` |
-| 404 | `NotFoundError` |
-| 409 | `ConflictError` (for example a finalize checksum mismatch) |
-| 422 | `ValidationError` |
-| 5xx | `ServerError` |
-| Any other non-2xx (400, 405, 413, 429…) | `MediaLibraryError` |
+`reason` is the refusal's reason: the HTTP body's `detail.reason`, or the
+gRPC status's `google.rpc.ErrorInfo.reason` (the same strings; constants in
+`pkg_media.reasons`, for example `reasons.DEPLOY_DELETED`). `domain` is the
+refusing gRPC service (`fritill.media.v1.Assets`…). `status_code` and `body`
+are set over HTTP, `grpc_status` over gRPC. The message is the response's
+`detail` or the status details. `UploadRejected` sets its own `reason`.
+They survive pickling, for example across process pools.
 
 ```python
 from pkg_media import AuthenticationError, MediaLibraryError, NotFoundError
@@ -1579,9 +1617,10 @@ except MediaLibraryError as exc:
     print(exc.status_code, exc.body)
 ```
 
-**Transport errors are not wrapped.** Connection errors and timeouts raise
-`httpx.HTTPError` subclasses (`httpx.ConnectError`, `httpx.TimeoutException`…)
-from every method. `AccessGate` is the exception: it raises them as
+**HTTP transport errors are not wrapped.** Over HTTP, connection errors and
+timeouts raise `httpx.HTTPError` subclasses (`httpx.ConnectError`,
+`httpx.TimeoutException`…) from every method. Over gRPC they are statuses
+(`UnavailableError`, `DeadlineExceededError`). `AccessGate` is the exception: it raises them as
 `MediaLibraryError` (status `None`) with the original as `__cause__`.
 
 Client-side errors raised before any request: `UploadRejected` (a profile
@@ -1617,6 +1656,13 @@ too. It is a server setup problem: ask the media library's operators.
 
 ### Retries
 
+**gRPC** retries by itself: a call answered `UNAVAILABLE` is made again up
+to `retries` times (default 2) with backoff. That covers read-only calls and
+mutating ones, which always carry an `idempotency-key` (the same on every
+attempt, so media applies the change once). No other status is retried.
+
+**HTTP** does not retry:
+
 - **Safe to retry** with backoff: `ServerError` with 502, 503 or 504, and
   `httpx.TransportError`, for reads (`get`, `list`, `resolve`, processing
   options) and for `upload_part` (idempotent with the same checksum).
@@ -1625,11 +1671,13 @@ too. It is a server setup problem: ask the media library's operators.
 - **Do not blindly retry** `create_session` (each call creates a new
   session), `grants.issue` (issue a new grant only when needed) or
   `delete`.
-- **Never retry** `AuthenticationError`, `NotFoundError`, `ValidationError`
-  or `ConflictError`: the request itself is wrong.
 
-For connection-level retries, give your own `httpx.Client` a transport with
-`retries=` (see [Use your own `httpx.Client`](#use-your-own-httpxclient)).
+On both transports, **never retry** `AuthenticationError`, `NotFoundError`,
+`ValidationError` or `ConflictError`: the request itself is wrong.
+
+For connection-level HTTP retries, give your own `httpx.AsyncClient` a
+transport with `retries=` (see
+[Use your own `httpx.AsyncClient`](#use-your-own-httpxasyncclient)).
 
 ## Test your integration
 
@@ -2052,19 +2100,33 @@ Used by `client.policies` and `client.access`.
 Every public name, generated from `__all__` and the API classes. HTTP paths
 are relative to `base_url`.
 
-### `MediaLibraryClient`
+### `MediaClient`, `AsyncMediaClient`, `MediaLibraryClient`
 
 ```
-MediaLibraryClient(base_url, tenant_id, token=None, timeout=30.0, http_client=None)
+AsyncMediaClient(transport="http", *, base_url=None, target=None, token=None,
+                 credentials=None, token_url=None, client_id=None, client_secret=None,
+                 tenant_id=None, timeout=30.0, retries=2, secure=False,
+                 http_client=None, channel=None)
+MediaClient(transport="http", **same keyword arguments)
+MediaLibraryClient(base_url, tenant_id=None, token=None, timeout=30.0, http_client=None)
+ClientCredentials(token_url, client_id, client_secret, *, scope=None, refresh_margin=30.0)
+ClientCredentials.for_realm(keycloak_url, realm, client_id, client_secret)
 ```
 
 | Member | Does | Returns |
 |---|---|---|
-| `tenant_id` | The tenant sent as `X-Tenant` (property) | `str` |
-| `set_token(token)` | Replace the `Authorization` header | `None` |
-| `close()` | Close the `httpx.Client` the client created (not one you passed) | `None` |
-| `__enter__` / `__exit__` | Context manager; closes on exit | the client |
-| `uploads`, `processing`, `assets`, `delivery`, `grants`, `permalinks`, `policies`, `access` | The API objects below | — |
+| `transport` | `"http"` or `"grpc"` | `str` |
+| `tenant_id` | Scopes cache entries; never sent (property) | `str` or `None` |
+| `set_token(token)` | Replace a fixed bearer token | `None` |
+| `close()` / `await aclose()` | Close the connections or channel (and `MediaClient`'s loop thread) | `None` |
+| context manager (`with` / `async with`) | Closes on exit | the client |
+| `uploads`, `processing`, `assets`, `delivery`, `grants`, `permalinks` | The API objects below; awaitable on `AsyncMediaClient` | — |
+| `policies`, `access` | Deprecated, `MediaClient` over HTTP only | — |
+| `aio` | `MediaClient` only: the `AsyncMediaClient` it runs | — |
+
+The tables below give the HTTP route of each method; the gRPC method is the
+one in the same service (`client.assets.get` → `Assets.GetAsset`, see
+`pkg_media.methods`).
 
 ### `UploadsAPI` (`client.uploads`)
 
@@ -2073,6 +2135,7 @@ MediaLibraryClient(base_url, tenant_id, token=None, timeout=30.0, http_client=No
 | Method | HTTP | Returns | Raises | Does |
 |---|---|---|---|---|
 | `create_session(*, mime_type, profile=None, kind=None, visibility=None, processing_config=None, original_filename=None, expected_size_bytes=None, expected_sha256_hex=None, collection_name=None, validate=True)` | `POST BASE` | `UploadSession` | `TypeError` (no kind), `UploadRejected`, HTTP errors | Create an upload session |
+| `open_session(*, same as create_session, subject=None, grant_ttl_seconds=None)` | `POST BASE`, then `POST /v1/manage/grants` (gRPC: `Uploads.OpenSession`) | `OpenedUploadSession` (`session`, `grant`) | as `create_session` | A session plus an `upload` grant for it, for a browser upload |
 | `get_session(session_id)` | `GET BASE/{id}` | `UploadSession` | HTTP errors | A session's state and received parts |
 | `upload_part(session_id, part_number, data, *, sha256_hex=None, offset=None, total_size_bytes=None)` | `PUT BASE/{id}/parts/{n}` | `UploadPartResult` | HTTP errors | Upload one part, with its SHA-256 |
 | `finalize(session_id, *, expected_sha256_hex=None)` | `POST BASE/{id}/finalize` | `UploadFinalizeResult` | `ConflictError` (checksum), HTTP errors | Assemble the parts into an asset |

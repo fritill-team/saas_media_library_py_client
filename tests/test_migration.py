@@ -325,7 +325,7 @@ def test_cli_prints_module_for_active_policies(capsys) -> None:
     assert not [w for w in record if issubclass(w.category, DeprecationWarning)]
     request = route.calls.last.request
     assert dict(request.url.params) == {"is_active": "true"}
-    assert request.headers["X-Tenant"] == "tenant-1"
+    assert "X-Tenant" not in request.headers
     assert request.headers["Authorization"] == "Bearer svc"
     loaded = _load(capsys.readouterr().out)
     assert list(loaded) == ["avatars", "courses/video"]

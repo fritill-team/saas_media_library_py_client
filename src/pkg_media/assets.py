@@ -3,9 +3,6 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
-import httpx
-
-from pkg_media._http import raise_for_status
 from pkg_media.models import (
     Asset,
     AssetKind,
@@ -30,17 +27,17 @@ class BulkVisibilityResult:
 
 
 class AssetsAPI:
-    """Manage assets (``/manage/assets``). Delivery links are ``client.delivery``."""
+    """Manage assets (HTTP ``/manage/assets``, gRPC ``fritill.media.v1.Assets``).
+    Delivery links are ``client.delivery``."""
 
     MANAGE_BASE = "/v1/manage/assets"
-    DELIVERY_BASE = "/v1/delivery/assets"
 
-    def __init__(self, http: httpx.Client):
-        self._http = http
+    def __init__(self, transport: Any):
+        self._transport = transport
 
     # ── Manage endpoints (admin) ───────────────────────────────────────
 
-    def list(
+    async def list(
         self,
         *,
         kind: Optional[AssetKind | str] = None,
@@ -52,29 +49,21 @@ class AssetsAPI:
     ) -> PaginatedAssets:
         """List assets with full details (admin)."""
         params = self._build_list_params(kind, status, query, page, page_size, resource_policy_id=resource_policy_id)
-        resp = self._http.get(self.MANAGE_BASE, params=params)
-        raise_for_status(resp)
-        return PaginatedAssets.model_validate(resp.json())
+        return await self._transport.list_assets(params)
 
-    def get(self, asset_id: UUID | str) -> Asset:
+    async def get(self, asset_id: UUID | str) -> Asset:
         """Get a single asset with resolved download URL (admin)."""
-        resp = self._http.get(f"{self.MANAGE_BASE}/{asset_id}")
-        raise_for_status(resp)
-        return Asset.model_validate(resp.json())
+        return await self._transport.get_asset(str(asset_id))
 
-    def resolve(self, asset_ids: List[UUID | str]) -> List[BatchResolveResult]:
+    async def resolve(self, asset_ids: List[UUID | str]) -> List[BatchResolveResult]:
         """Batch resolve download URLs for up to 100 assets (admin)."""
-        payload = {"assetIds": [str(a) for a in asset_ids]}
-        resp = self._http.post(f"{self.MANAGE_BASE}/resolve", json=payload)
-        raise_for_status(resp)
-        return [BatchResolveResult.model_validate(i) for i in resp.json()["items"]]
+        return await self._transport.resolve_assets([str(a) for a in asset_ids])
 
-    def delete(self, asset_id: UUID | str) -> None:
+    async def delete(self, asset_id: UUID | str) -> None:
         """Delete an asset and all related records."""
-        resp = self._http.delete(f"{self.MANAGE_BASE}/{asset_id}")
-        raise_for_status(resp)
+        await self._transport.delete_asset(str(asset_id))
 
-    def update_visibility(
+    async def update_visibility(
         self,
         asset_id: UUID | str,
         visibility: Visibility | str,
@@ -91,14 +80,9 @@ class AssetsAPI:
         may move a RESTRICTED asset to another visibility; anyone else gets
         403 (``AuthenticationError``).
         """
-        resp = self._http.patch(
-            f"{self.MANAGE_BASE}/{asset_id}",
-            json={"visibility": str(visibility)},
-        )
-        raise_for_status(resp)
-        return Asset.model_validate(resp.json())
+        return await self._transport.update_asset_visibility(str(asset_id), str(visibility))
 
-    def bulk_update_visibility(
+    async def bulk_update_visibility(
         self,
         asset_ids: List[UUID | str],
         visibility: Visibility | str,
@@ -113,20 +97,16 @@ class AssetsAPI:
         by a caller who is not privileged (``forbidden``). See
         ``update_visibility``.
         """
-        payload = {
-            "assetIds": [str(a) for a in asset_ids],
-            "visibility": str(visibility),
-        }
-        resp = self._http.post(f"{self.MANAGE_BASE}/bulk-visibility", json=payload)
-        raise_for_status(resp)
-        data = resp.json()
+        data = await self._transport.bulk_update_asset_visibility(
+            [str(a) for a in asset_ids], str(visibility)
+        )
         return BulkVisibilityResult(
             items=data["items"], updated=data["updated"], failed=data["failed"]
         )
 
     # ── Web-app deploys (rollback) ─────────────────────────────────────
 
-    def list_deploys(
+    async def list_deploys(
         self,
         asset_id: UUID | str,
         *,
@@ -145,14 +125,9 @@ class AssetsAPI:
             NotFoundError: ``reason`` is ``asset_not_found`` (unknown or
                 deleted asset) or ``not_a_web_app``.
         """
-        resp = self._http.get(
-            f"{self.MANAGE_BASE}/{asset_id}/deploys",
-            params={"limit": limit, "offset": offset},
-        )
-        raise_for_status(resp)
-        return WebAppDeployList.model_validate(resp.json())
+        return await self._transport.list_deploys(str(asset_id), limit, offset)
 
-    def activate_deploy(
+    async def activate_deploy(
         self,
         asset_id: UUID | str,
         deploy_id: UUID | str,
@@ -176,11 +151,7 @@ class AssetsAPI:
                 ``scan_not_allowed`` (its ZIP is not clean) or
                 ``deploy_changed`` (a concurrent deploy; retry).
         """
-        resp = self._http.post(
-            f"{self.MANAGE_BASE}/{asset_id}/deploys/{deploy_id}/activate"
-        )
-        raise_for_status(resp)
-        return WebAppDeployList.model_validate(resp.json())
+        return await self._transport.activate_deploy(str(asset_id), str(deploy_id))
 
     # ── Private helpers ────────────────────────────────────────────────
 

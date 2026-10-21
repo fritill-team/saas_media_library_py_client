@@ -530,15 +530,16 @@ def test_assets_still_processing_are_not_cached(server) -> None:
 
 
 class TenantServer:
-    """POST /delivery/assets/resolve that answers per X-Tenant: each tenant
-    only finds its own assets."""
+    """POST /delivery/assets/resolve that answers per service token (no
+    X-Tenant is sent): each tenant's token only finds its own assets."""
 
     def __init__(self, assets_by_tenant: Dict[str, set]) -> None:
         self.assets_by_tenant = assets_by_tenant
         self.requests: List[tuple] = []
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
-        tenant = request.headers["X-Tenant"]
+        assert "X-Tenant" not in request.headers
+        tenant = request.headers["Authorization"].replace("Bearer service-", "tenant-")
         ids = json.loads(request.content)["assetIds"]
         self.requests.append((tenant, ids))
         items = [

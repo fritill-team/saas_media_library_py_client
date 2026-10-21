@@ -33,11 +33,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         prog="python -m pkg_media.migrate_policies",
         description=(
             "Print a Python module defining UPLOAD_PROFILES, converted from the "
-            "tenant's resource policies."
+            "media library's resource policies."
         ),
     )
     parser.add_argument("--base-url", required=True, help="Media library API base URL")
-    parser.add_argument("--tenant", required=True, help="Tenant id (sent as X-Tenant)")
+    parser.add_argument("--tenant", help="Ignored (media serves one app); kept for older scripts")
     parser.add_argument(
         "--token",
         default=os.environ.get(TOKEN_ENV_VAR),
@@ -54,7 +54,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     try:
         with MediaLibraryClient(
-            base_url=args.base_url, tenant_id=args.tenant, token=args.token
+            base_url=args.base_url, token=args.token
         ) as client, warnings.catch_warnings():
             # Reading the policies is the point here; don't warn about it.
             warnings.simplefilter("ignore", DeprecationWarning)

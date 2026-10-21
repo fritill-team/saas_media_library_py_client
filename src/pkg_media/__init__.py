@@ -1,4 +1,5 @@
-from pkg_media.client import MediaLibraryClient
+from pkg_media.client import AsyncMediaClient, MediaClient, MediaLibraryClient
+from pkg_media.credentials import ClientCredentials
 from pkg_media.asset_access import AssetAccessAPI
 from pkg_media.assets import BulkVisibilityResult
 from pkg_media.cache import AssetUrlCache
@@ -19,7 +20,7 @@ from pkg_media.permalinks import (
 )
 from pkg_media.processing_options import ProcessingOptionsAPI
 from pkg_media.profiles import UploadProfile
-from pkg_media.uploads import UploadsAPI
+from pkg_media.uploads import OpenedUploadSession, UploadsAPI
 from pkg_media.service_uploads import (
     ClaimedUpload,
     InMemoryUploadStore,
@@ -63,10 +64,23 @@ from pkg_media.exceptions import (
     ConflictError,
     ServerError,
     UploadRejected,
+    InvalidArgumentError,
+    UnauthenticatedError,
+    PermissionDeniedError,
+    FailedPreconditionError,
+    ResourceExhaustedError,
+    UnavailableError,
+    DeadlineExceededError,
+    UnimplementedError,
+    InternalError,
 )
 
 __all__ = [
+    "AsyncMediaClient",
+    "MediaClient",
     "MediaLibraryClient",
+    "ClientCredentials",
+    "OpenedUploadSession",
     "AssetAccessAPI",
     "BulkVisibilityResult",
     "AccessGate",
@@ -126,6 +140,15 @@ __all__ = [
     "ConflictError",
     "ServerError",
     "UploadRejected",
+    "InvalidArgumentError",
+    "UnauthenticatedError",
+    "PermissionDeniedError",
+    "FailedPreconditionError",
+    "ResourceExhaustedError",
+    "UnavailableError",
+    "DeadlineExceededError",
+    "UnimplementedError",
+    "InternalError",
 ]
 
 from importlib.metadata import PackageNotFoundError, version

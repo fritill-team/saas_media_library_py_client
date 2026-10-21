@@ -251,8 +251,8 @@ def test_resolve_with_cache_is_scoped_by_tenant() -> None:
         a.delivery.resolve([asset_id], cache=cache)
 
     assert len(requests) == 2
-    tenants = [call.request.headers["X-Tenant"] for call in respx.calls]
-    assert tenants == ["tenant-a", "tenant-b"]
+    # tenant_id only scopes the cache: no X-Tenant is sent.
+    assert not [call for call in respx.calls if "X-Tenant" in call.request.headers]
 
 
 @respx.mock

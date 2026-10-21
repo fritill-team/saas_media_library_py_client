@@ -64,7 +64,7 @@ def test_list_deploys_sends_paging_and_parses_the_page() -> None:
 
     request = route.calls.last.request
     assert dict(request.url.params) == {"limit": "2", "offset": "4"}
-    assert request.headers["X-Tenant"] == TENANT_ID
+    assert "X-Tenant" not in request.headers
     assert isinstance(page, WebAppDeployList)
     assert page.live_deploy_id == live_id
     assert (page.limit, page.offset, page.next_offset) == (2, 4, 6)

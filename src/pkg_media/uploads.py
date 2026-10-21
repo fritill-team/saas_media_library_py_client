@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import hashlib
 import io
 import logging
@@ -11,10 +12,8 @@ import tempfile
 from typing import Any, BinaryIO, Dict, Iterator, Mapping, Optional, Tuple, Union
 from uuid import UUID
 
-import httpx
-
-from pkg_media._http import raise_for_status
 from pkg_media.exceptions import MediaLibraryError, UploadRejected
+from pkg_media.grants import MediaGrant
 from pkg_media.models import (
     Asset,
     AssetKind,
@@ -42,28 +41,38 @@ DEFAULT_MIME_TYPE = "application/octet-stream"
 _SPOOL_MAX_BYTES = 8 * 1024 * 1024
 
 
+@dataclasses.dataclass(frozen=True)
+class OpenedUploadSession:
+    """What ``UploadsAPI.open_session`` returns: the session and an
+    ``upload`` grant for that one session, to hand to the browser."""
+
+    session: UploadSession
+    grant: MediaGrant
+
+
 class UploadsAPI:
     """Chunked uploads without a resource policy.
 
     The app's ``UploadProfile`` supplies the kind, visibility and processing
     settings, and checks the file before anything is sent. The server accepts
-    policy-less upload sessions (every call: create, get, parts, finalize,
-    abort) only from a trusted caller: the tenant's service token, or a user
-    of a ``token_exchange`` tenant. Others get 403 (``AuthenticationError``)
-    unless the server sets ``POLICYLESS_UPLOADS_ALLOW_UNVERIFIED_USERS``.
+    upload sessions only from a trusted caller (a service, or a grant with
+    the ``upload`` scope); others get 403 (``AuthenticationError``).
 
-    ``upload_file`` runs the whole flow; the lower-level methods map 1:1 to
-    the ``/v1/manage/uploads/sessions`` endpoints.
+    ``open_session`` starts a browser upload (the session plus an upload
+    grant for it). ``upload_file`` and ``upload_part`` send bytes and need
+    the HTTP transport: bytes never travel over gRPC. The other methods work
+    on both transports (HTTP ``/v1/manage/uploads/sessions``, gRPC
+    ``fritill.media.v1.Uploads``).
     """
 
     BASE = "/v1/manage/uploads/sessions"
 
-    def __init__(self, http: httpx.Client):
-        self._http = http
+    def __init__(self, transport: Any):
+        self._transport = transport
 
     # ── Session endpoints ──────────────────────────────────────────────
 
-    def create_session(
+    async def create_session(
         self,
         *,
         mime_type: str,
@@ -86,11 +95,88 @@ class UploadsAPI:
         ``mime_type`` is sent normalized (``"Image/PNG; q=1"`` as
         ``"image/png"``), with or without a profile.
 
+        Over gRPC this is ``Uploads.OpenSession`` (its grant is dropped; use
+        ``open_session`` to keep it).
+
         Raises:
             TypeError: if neither ``kind`` nor ``profile`` is given.
             UploadRejected: if the profile rejects the file, or ``mime_type``
                 is not ``type/subtype``.
         """
+        payload = self._session_payload(
+            mime_type=mime_type,
+            profile=profile,
+            kind=kind,
+            visibility=visibility,
+            processing_config=processing_config,
+            original_filename=original_filename,
+            expected_size_bytes=expected_size_bytes,
+            expected_sha256_hex=expected_sha256_hex,
+            collection_name=collection_name,
+            validate=validate,
+        )
+        return await self._transport.create_session(payload)
+
+    async def open_session(
+        self,
+        *,
+        mime_type: str,
+        profile: Optional[UploadProfile] = None,
+        kind: Optional[AssetKind | str] = None,
+        visibility: Optional[Visibility | str] = None,
+        processing_config: Optional[ProcessingConfig | Mapping[str, Any]] = None,
+        original_filename: Optional[str] = None,
+        expected_size_bytes: Optional[int] = None,
+        expected_sha256_hex: Optional[str] = None,
+        collection_name: Optional[str] = None,
+        subject: Optional[str] = None,
+        grant_ttl_seconds: Optional[int] = None,
+        validate: bool = True,
+    ) -> OpenedUploadSession:
+        """Create a session for a browser upload, with an ``upload`` grant
+        for that one session.
+
+        The arguments are ``create_session``'s, plus the grant's ``subject``
+        (the app's user reference) and ``grant_ttl_seconds`` (server default
+        600). Over gRPC this is one call (``Uploads.OpenSession``); over HTTP
+        the session is created, then the grant issued, and the session is
+        aborted if the grant cannot be issued. Hand ``grant.grant`` to the
+        browser; it uploads the parts to media's HTTP API.
+        """
+        payload = self._session_payload(
+            mime_type=mime_type,
+            profile=profile,
+            kind=kind,
+            visibility=visibility,
+            processing_config=processing_config,
+            original_filename=original_filename,
+            expected_size_bytes=expected_size_bytes,
+            expected_sha256_hex=expected_sha256_hex,
+            collection_name=collection_name,
+            validate=validate,
+        )
+        grant_payload: Dict[str, Any] = {"scopes": ["upload"]}
+        if subject is not None:
+            grant_payload["subject"] = subject
+        if grant_ttl_seconds is not None:
+            grant_payload["ttlSeconds"] = grant_ttl_seconds
+        session, grant = await self._transport.open_session(payload, grant_payload)
+        return OpenedUploadSession(session=session, grant=grant)
+
+    @staticmethod
+    def _session_payload(
+        *,
+        mime_type: str,
+        profile: Optional[UploadProfile],
+        kind: Optional[AssetKind | str],
+        visibility: Optional[Visibility | str],
+        processing_config: Optional[ProcessingConfig | Mapping[str, Any]],
+        original_filename: Optional[str],
+        expected_size_bytes: Optional[int],
+        expected_sha256_hex: Optional[str],
+        collection_name: Optional[str],
+        validate: bool,
+    ) -> Dict[str, Any]:
         fields: Dict[str, Any] = profile.to_session_fields() if profile is not None else {}
         if kind is not None:
             fields["kind"] = str(kind)
@@ -115,18 +201,13 @@ class UploadsAPI:
             payload["expected_sha256_hex"] = expected_sha256_hex
         if collection_name is not None:
             payload["collection_name"] = collection_name
+        return payload
 
-        resp = self._http.post(self.BASE, json=payload)
-        raise_for_status(resp)
-        return UploadSession.model_validate(resp.json())
-
-    def get_session(self, session_id: UUID | str) -> UploadSession:
+    async def get_session(self, session_id: UUID | str) -> UploadSession:
         """Get an upload session's state and progress."""
-        resp = self._http.get(f"{self.BASE}/{session_id}")
-        raise_for_status(resp)
-        return UploadSession.model_validate(resp.json())
+        return await self._transport.get_session(str(session_id))
 
-    def upload_part(
+    async def upload_part(
         self,
         session_id: UUID | str,
         part_number: int,
@@ -141,7 +222,7 @@ class UploadsAPI:
         The server requires a part checksum: ``sha256_hex`` is computed from
         ``data`` when not given. Pass ``offset`` (and ``total_size_bytes``) to
         also send a ``Content-Range`` header. Re-sending a part with the same
-        checksum is idempotent.
+        checksum is idempotent. HTTP transport only.
         """
         body = bytes(data)
         headers = {
@@ -153,15 +234,9 @@ class UploadsAPI:
             total = str(total_size_bytes) if total_size_bytes is not None else "*"
             headers["Content-Range"] = f"bytes {offset}-{offset + len(body) - 1}/{total}"
 
-        resp = self._http.put(
-            f"{self.BASE}/{session_id}/parts/{part_number}",
-            content=body,
-            headers=headers,
-        )
-        raise_for_status(resp)
-        return UploadPartResult.model_validate(resp.json())
+        return await self._transport.upload_part(str(session_id), part_number, body, headers)
 
-    def finalize(
+    async def finalize(
         self,
         session_id: UUID | str,
         *,
@@ -172,21 +247,16 @@ class UploadsAPI:
         With ``expected_sha256_hex`` the server verifies the whole file and
         answers 409 (``ConflictError``) on a mismatch.
         """
-        params = {"expected_sha256_hex": expected_sha256_hex} if expected_sha256_hex else {}
-        resp = self._http.post(f"{self.BASE}/{session_id}/finalize", params=params)
-        raise_for_status(resp)
-        return UploadFinalizeResult.model_validate(resp.json())
+        return await self._transport.finalize_session(str(session_id), expected_sha256_hex or None)
 
-    def abort(self, session_id: UUID | str) -> UploadAbortResult:
+    async def abort(self, session_id: UUID | str) -> UploadAbortResult:
         """Abort a session and delete its uploaded parts.
 
         Note: aborting a *finalized* session also deletes its blob.
         """
-        resp = self._http.post(f"{self.BASE}/{session_id}/abort")
-        raise_for_status(resp)
-        return UploadAbortResult.model_validate(resp.json())
+        return await self._transport.abort_session(str(session_id))
 
-    def verify_upload(
+    async def verify_upload(
         self,
         session_id: UUID | str,
         asset_id: UUID | str,
@@ -220,15 +290,13 @@ class UploadsAPI:
                 ``ASSET_MISMATCH``, ``VISIBILITY``, or a profile reason.
             NotFoundError: no such session or asset.
         """
-        session = self.get_session(session_id)
+        session = await self.get_session(session_id)
         if session.state != "finalized" or session.final_blob_id is None:
             raise UploadRejected(
                 f"Upload session {session_id} is not finalized (state {session.state})",
                 reason=UploadRejected.NOT_FINALIZED,
             )
-        resp = self._http.get(f"/v1/manage/assets/{asset_id}")
-        raise_for_status(resp)
-        asset = Asset.model_validate(resp.json())
+        asset = await self._transport.get_asset(str(asset_id))
         if asset.upload_session_id is not None:
             from_session = asset.upload_session_id == session.id
         else:
@@ -249,7 +317,7 @@ class UploadsAPI:
 
     # ── Convenience ────────────────────────────────────────────────────
 
-    def upload_file(
+    async def upload_file(
         self,
         source: UploadSource,
         *,
@@ -282,9 +350,16 @@ class UploadsAPI:
         is only followed by an abort when the session is confirmed not
         finalized, since aborting a finalized session deletes its blob.
 
+        HTTP transport only (it sends the bytes).
+
         Raises:
             UploadRejected: if the profile rejects the file (nothing is sent).
         """
+        if self._transport.name != "http":
+            raise MediaLibraryError(
+                "upload_file sends bytes, which never travel over gRPC: use a client with "
+                "transport='http', or open_session and let the browser upload"
+            )
         if part_size_bytes is not None and part_size_bytes <= 0:
             raise ValueError("part_size_bytes must be positive")
 
@@ -294,7 +369,7 @@ class UploadsAPI:
                 mime_type = _guess_mime_type(filename)
             profile.validate_file(mime_type, size_bytes)
 
-            session = self.create_session(
+            session = await self.create_session(
                 mime_type=mime_type,
                 profile=profile,
                 original_filename=filename,
@@ -324,7 +399,7 @@ class UploadsAPI:
                         )
                     if file_hash is not None:
                         file_hash.update(chunk)
-                    self.upload_part(
+                    await self.upload_part(
                         session.id,
                         part_number,
                         chunk,
@@ -335,17 +410,17 @@ class UploadsAPI:
                     offset += expected
 
                 finalizing = True
-                return self.finalize(
+                return await self.finalize(
                     session.id,
                     expected_sha256_hex=file_hash.hexdigest() if file_hash is not None else None,
                 )
             except Exception:
-                self._abort_quietly(session.id, check_finalized=finalizing)
+                await self._abort_quietly(session.id, check_finalized=finalizing)
                 raise
 
     # ── Private helpers ────────────────────────────────────────────────
 
-    def _abort_quietly(self, session_id: UUID, *, check_finalized: bool) -> None:
+    async def _abort_quietly(self, session_id: UUID, *, check_finalized: bool) -> None:
         """Best-effort abort after a failed upload; never raises.
 
         With ``check_finalized`` (the failure came from ``finalize``, e.g. a
@@ -354,9 +429,9 @@ class UploadsAPI:
         session for the server to expire.
         """
         try:
-            if check_finalized and self.get_session(session_id).state == "finalized":
+            if check_finalized and (await self.get_session(session_id)).state == "finalized":
                 return
-            self.abort(session_id)
+            await self.abort(session_id)
         except Exception as exc:
             logger.warning("Could not abort upload session %s: %s", session_id, exc)
 

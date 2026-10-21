@@ -12,13 +12,29 @@ from typing import Optional
 import httpx
 
 from pkg_media.exceptions import (
-    AuthenticationError,
-    ConflictError,
+    FailedPreconditionError,
+    InternalError,
+    InvalidArgumentError,
     MediaLibraryError,
     NotFoundError,
-    ServerError,
-    ValidationError,
+    PermissionDeniedError,
+    ResourceExhaustedError,
+    UnauthenticatedError,
+    UnavailableError,
 )
+
+# HTTP status -> exception, as the server maps HTTP statuses to gRPC (AD-10).
+_ERRORS = {
+    400: InvalidArgumentError,
+    422: InvalidArgumentError,
+    401: UnauthenticatedError,
+    403: PermissionDeniedError,
+    404: NotFoundError,
+    409: FailedPreconditionError,
+    410: FailedPreconditionError,
+    429: ResourceExhaustedError,
+    503: UnavailableError,
+}
 
 
 def raise_for_status(response: httpx.Response) -> None:
@@ -35,18 +51,8 @@ def raise_for_status(response: httpx.Response) -> None:
     code = response.status_code
     reason = _detail_reason(body)
 
-    if code == 401 or code == 403:
-        raise AuthenticationError(msg, status_code=code, body=body, reason=reason)
-    elif code == 404:
-        raise NotFoundError(msg, status_code=code, body=body, reason=reason)
-    elif code == 409:
-        raise ConflictError(msg, status_code=code, body=body, reason=reason)
-    elif code == 422:
-        raise ValidationError(msg, status_code=code, body=body, reason=reason)
-    elif code >= 500:
-        raise ServerError(msg, status_code=code, body=body, reason=reason)
-    else:
-        raise MediaLibraryError(msg, status_code=code, body=body, reason=reason)
+    cls = _ERRORS.get(code) or (InternalError if code >= 500 else MediaLibraryError)
+    raise cls(msg, status_code=code, body=body, reason=reason)
 
 
 def _detail_reason(body: object) -> Optional[str]:

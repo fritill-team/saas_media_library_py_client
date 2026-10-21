@@ -54,7 +54,7 @@ def test_set_puts_the_asset_id_under_the_name() -> None:
 
     assert route.called
     assert captured["body"] == {"assetId": str(asset_id)}
-    assert captured["headers"]["X-Tenant"] == TENANT_ID
+    assert "X-Tenant" not in captured["headers"]
     assert isinstance(permalink, Permalink)
     assert permalink.name == "users/42/avatar"
     assert permalink.asset_id == asset_id

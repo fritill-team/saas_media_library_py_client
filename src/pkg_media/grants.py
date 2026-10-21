@@ -15,10 +15,8 @@ from enum import Enum
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Union
 from uuid import UUID
 
-import httpx
 from pydantic import BaseModel, Field
 
-from pkg_media._http import raise_for_status
 from pkg_media.profiles import ANY_MIME_TYPE, UploadProfile, processing_config_payload
 
 
@@ -88,14 +86,15 @@ def grant_profile_payload(profile: Union[UploadProfile, Mapping[str, Any]]) -> D
 
 
 class GrantsAPI:
-    """``POST /manage/grants``. Needs a client with the tenant's service token."""
+    """Issue media grants (HTTP ``POST /manage/grants``, gRPC
+    ``fritill.media.v1.Grants``). Needs a service caller."""
 
     BASE = "/v1/manage/grants"
 
-    def __init__(self, http: httpx.Client):
-        self._http = http
+    def __init__(self, transport: Any):
+        self._transport = transport
 
-    def read(
+    async def read(
         self,
         asset_ids: Iterable[Union[UUID, str]],
         *,
@@ -113,9 +112,9 @@ class GrantsAPI:
         ids = list(asset_ids)
         if not ids:
             raise ValueError("read() needs at least one asset id")
-        return self.issue([GrantScope.READ], asset_ids=ids, subject=subject, ttl_seconds=ttl_seconds)
+        return await self.issue([GrantScope.READ], asset_ids=ids, subject=subject, ttl_seconds=ttl_seconds)
 
-    def issue(
+    async def issue(
         self,
         scopes: Iterable[Union[GrantScope, str]],
         *,
@@ -158,6 +157,4 @@ class GrantsAPI:
             payload["subject"] = subject
         if ttl_seconds is not None:
             payload["ttlSeconds"] = ttl_seconds
-        resp = self._http.post(self.BASE, json=payload)
-        raise_for_status(resp)
-        return MediaGrant.model_validate(resp.json())
+        return await self._transport.issue_grant(payload)
