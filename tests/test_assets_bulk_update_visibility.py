@@ -6,8 +6,8 @@ import httpx
 import pytest
 import respx
 
-from saas_media_library import MediaLibraryClient, MediaLibraryError, Visibility
-from saas_media_library.assets import BulkVisibilityResult
+from pkg_media import MediaLibraryClient, MediaLibraryError, Visibility
+from pkg_media.assets import BulkVisibilityResult
 
 
 BASE_URL = "https://media.test"

@@ -1,0 +1,9 @@
+
+ð
+!fritill/conformance/v1/ping.protofritill.conformance.v1"#
+PingRequest
+nonce (	Rnonce"$
+PingResponse
+nonce (	Rnonce2`
+ConformanceQ
+Ping#.fritill.conformance.v1.PingRequest$.fritill.conformance.v1.PingResponsebproto3

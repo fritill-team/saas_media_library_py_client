@@ -7,7 +7,7 @@ import httpx
 import pytest
 import respx
 
-from saas_media_library import (
+from pkg_media import (
     AuthenticationError,
     MediaLibraryClient,
     NotFoundError,

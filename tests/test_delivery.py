@@ -7,7 +7,7 @@ import httpx
 import pytest
 import respx
 
-from saas_media_library import (
+from pkg_media import (
     AssetUrlCache,
     AuthenticationError,
     DeliveryAPI,
@@ -203,40 +203,6 @@ def test_list_sends_filters() -> None:
     assert result.items[0].id == asset_id
 
 
-# ── AssetsAPI.delivery_* stay working (delegating to DeliveryAPI) ─────
-
-
-@respx.mock
-def test_assets_delivery_resolve_delegates_with_chunking() -> None:
-    requests: list = []
-    respx.post(f"{DELIVERY_URL}/resolve").mock(side_effect=_resolve_handler(requests))
-    ids = [uuid4() for _ in range(101)]
-
-    with _make_client() as client:
-        items = client.assets.delivery_resolve(ids)
-
-    assert [len(r) for r in requests] == [100, 1]
-    assert [i.asset_id for i in items] == ids
-    assert items[0].thumbnail_url is not None
-
-
-@respx.mock
-def test_assets_delivery_get_and_list() -> None:
-    asset_id = uuid4()
-    respx.get(f"{DELIVERY_URL}/{asset_id}").mock(
-        return_value=httpx.Response(200, json=_delivery_asset(asset_id))
-    )
-    list_route = respx.get(DELIVERY_URL).mock(
-        return_value=httpx.Response(200, json={"items": [], "total": 0, "page": 1, "pageSize": 10})
-    )
-
-    with _make_client() as client:
-        assert client.assets.delivery_get(asset_id).id == asset_id
-        assert client.assets.delivery_list(kind="image").total == 0
-
-    assert list_route.calls.last.request.url.params["kind"] == "image"
-
-
 # ── resolve(..., cache=) ──────────────────────────────────────────────
 
 
@@ -385,7 +351,7 @@ def test_thumbnail_url_is_never_another_link() -> None:
 
 @respx.mock
 def test_get_parses_stream_urls_and_gate_download_type() -> None:
-    from saas_media_library import DownloadType
+    from pkg_media import DownloadType
 
     asset_id = uuid4()
     body = {
@@ -462,14 +428,14 @@ def test_resolve_items_carry_stream_urls() -> None:
 
 
 def test_download_type_values() -> None:
-    from saas_media_library import DownloadType
+    from pkg_media import DownloadType
 
     assert [t.value for t in DownloadType] == ["gate", "unavailable"]
 
 
 @respx.mock
 def test_get_unavailable_asset_has_no_download_url() -> None:
-    from saas_media_library import DownloadType
+    from pkg_media import DownloadType
 
     asset_id = uuid4()
     body = {**_delivery_asset(asset_id), "downloadType": "unavailable",

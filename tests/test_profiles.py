@@ -5,7 +5,7 @@ from uuid import uuid4
 import pydantic
 import pytest
 
-from saas_media_library import (
+from pkg_media import (
     Asset,
     AssetKind,
     DeliveryAsset,
@@ -16,7 +16,7 @@ from saas_media_library import (
     ValidationError,
     Visibility,
 )
-from saas_media_library.profiles import processing_config_payload
+from pkg_media.profiles import processing_config_payload
 
 
 def _profile(**overrides) -> UploadProfile:

@@ -1,6 +1,9 @@
-# SaaS Media Library: Python client
+# pkg_media: media library client and gRPC contract
 
-`saas-media-library` is the Python client for the SaaS Media Library API. The
+`pkg_media` (distribution `pkg-media`, formerly `saas-media-library`) is the
+Python client for the ITQ media library, and the home of its gRPC contract
+(`fritill.media.v1`: protos, committed stubs, servicer base classes, wire
+paths and error reasons). The
 media library stores, processes and serves your files. Your backend keeps the
 rules: what may be uploaded, who may open what, and which browser may do
 what. This client gives you the pieces for each: upload profiles, delivery
@@ -39,30 +42,36 @@ Links to `docs/…` point to the media library server repository
 The package is installed from GitHub.
 
 ```bash
-pip install "saas-media-library @ git+https://github.com/fritill-team/saas_media_library_py_client.git"
+pip install "pkg-media @ git+https://github.com/fritill-team/saas_media_library_py_client.git"
 ```
 
 With the optional FastAPI routers:
 
 ```bash
-pip install "saas-media-library[fastapi] @ git+https://github.com/fritill-team/saas_media_library_py_client.git"
+pip install "pkg-media[fastapi] @ git+https://github.com/fritill-team/saas_media_library_py_client.git"
 ```
 
 With uv:
 
 ```bash
-uv add "saas-media-library[fastapi] @ git+https://github.com/fritill-team/saas_media_library_py_client.git"
+uv add "pkg-media[fastapi] @ git+https://github.com/fritill-team/saas_media_library_py_client.git"
 ```
 
 Pin a release in production. Every release is a tag named
-`saas_media_library-v<version>`:
+`pkg_media-v<version>`:
 
 ```bash
-pip install "saas-media-library @ git+https://github.com/fritill-team/saas_media_library_py_client.git@saas_media_library-v0.20.0"
+pip install "pkg-media @ git+https://github.com/fritill-team/saas_media_library_py_client.git@pkg_media-v0.20.0"
 ```
 
-Dependencies: `httpx` (≥ 0.25, < 1.0) and `pydantic` 2. The `fastapi` extra
-adds `fastapi` (≥ 0.100).
+Releases before v0.26 were published as `saas-media-library` with tags
+`saas_media_library-v<version>`; from v0.26 the distribution is `pkg-media`,
+imported as `pkg_media`, with tags `pkg_media-v<version>`. See
+[From v0.26: `saas_media_library` is now `pkg_media`](#from-v026-saas_media_library-is-now-pkg_media).
+
+Dependencies: `httpx` (≥ 0.25, < 1.0), `pydantic` 2, `protobuf` (≥ 7.35.1,
+< 8) and `grpcio` (≥ 1.84). The `fastapi` extra adds `fastapi` (≥ 0.100).
+No code generator is installed: the gRPC stubs ship generated.
 
 ## Concepts
 
@@ -156,7 +165,7 @@ with its defaults; no step waits for input. The asset's `status` moves from
 ```python
 import os
 
-from saas_media_library import AssetKind, MediaLibraryClient, UploadProfile, Visibility
+from pkg_media import AssetKind, MediaLibraryClient, UploadProfile, Visibility
 
 AVATAR = UploadProfile(
     name="avatar",
@@ -187,7 +196,7 @@ background.
 ```python
 import os
 
-from saas_media_library import MediaLibraryClient
+from pkg_media import MediaLibraryClient
 
 client = MediaLibraryClient(
     base_url="https://media.example.com",
@@ -282,7 +291,7 @@ MIME types, sizes or permissions for these uploads; the profile does, in your
 process. Define profiles once, next to the feature that uses them.
 
 ```python
-from saas_media_library import AssetKind, ProcessingConfig, UploadProfile, Visibility
+from pkg_media import AssetKind, ProcessingConfig, UploadProfile, Visibility
 
 COURSE_COVER = UploadProfile(
     name="course-cover",
@@ -369,7 +378,7 @@ The option names and their allowed values come from the server: see
 Check who may upload before you upload:
 
 ```python
-from saas_media_library import UploadRejected
+from pkg_media import UploadRejected
 
 if not COURSE_COVER.check_permissions(user.permissions, authenticated=user.is_authenticated):
     raise PermissionError("not allowed to upload course covers")
@@ -543,7 +552,7 @@ user and the file, creates the session with its service token, and issues an
 `upload` grant for that session only:
 
 ```python
-from saas_media_library import GrantScope
+from pkg_media import GrantScope
 
 def start_video_upload(user, filename, mime_type, size_bytes):
     if not COURSE_VIDEO.check_permissions(user.permissions):
@@ -625,8 +634,8 @@ the session), the grant cannot create other sessions, and nobody can attach
 another user's upload, or one upload twice.
 
 ```python
-from saas_media_library import InMemoryUploadStore, UploadRejected, claim_upload
-from saas_media_library.integrations.fastapi import create_upload_router
+from pkg_media import InMemoryUploadStore, UploadRejected, claim_upload
+from pkg_media.integrations.fastapi import create_upload_router
 
 upload_store = InMemoryUploadStore()  # single process only: use your database in production
 
@@ -821,12 +830,6 @@ for field in option_fields(schema, "image"):
     print(field)
 ```
 
-Both methods work against older servers: on a 404 they fall back to the
-legacy resource-policy routes. `get_pipelines()` returns the same payload
-either way. `get_schema()` converts the legacy payload, but it only has
-`kinds`, `visibilities`, `mimeTypesByKind` and `pipelinesByKind`; read the
-other keys with `.get()` if you may talk to an older server.
-
 ## Manage assets
 
 `client.assets` reads, lists and deletes assets, changes their
@@ -857,7 +860,7 @@ for item in client.assets.resolve([result.asset_id]):
 ### Change visibility
 
 ```python
-from saas_media_library import Visibility
+from pkg_media import Visibility
 
 client.assets.update_visibility(result.asset_id, Visibility.RESTRICTED)
 
@@ -925,7 +928,7 @@ server's `detail.reason` in `exc.reason`:
 | 409 | `deploy_changed` | A concurrent deploy changed the rows: retry |
 
 ```python
-from saas_media_library import ConflictError
+from pkg_media import ConflictError
 
 try:
     client.assets.activate_deploy(app_id, deploy_id)
@@ -952,7 +955,7 @@ user uploads a new picture; every page that embedded the address follows.
 Service token only.
 
 ```python
-from saas_media_library import permalink_url
+from pkg_media import permalink_url
 
 link = client.permalinks.set("users/42/avatar", new_asset_id)  # create or re-point
 link.url                                    # "https://media.example.com/p/users/42/avatar"
@@ -1030,7 +1033,7 @@ preview URL of its `thumbnail` rendition, or else the result's
 items. It is never a download or other preview link.
 
 ```python
-from saas_media_library import thumbnail_url
+from pkg_media import thumbnail_url
 
 for item in items:
     print(thumbnail_url(item))
@@ -1079,7 +1082,7 @@ expires.
 their links expire:
 
 ```python
-from saas_media_library import AssetUrlCache
+from pkg_media import AssetUrlCache
 
 url_cache = AssetUrlCache(
     safety_margin=30,    # drop entries this many seconds before the shortest link expires
@@ -1194,7 +1197,7 @@ knows ids), put an `AccessGate` in front: it runs your `can_access` over
 every id and answers with `/delivery`-shaped results.
 
 ```python
-from saas_media_library import AccessGate
+from pkg_media import AccessGate
 
 def can_access(user, asset_ids):
     """Return the ids (of asset_ids) that user may open, in one query."""
@@ -1271,7 +1274,7 @@ its service token. The media library enforces the grant. See the server's
 [`docs/security/media-grants.md`](https://github.com/fritill-team/saas_media_library/blob/dev/docs/security/media-grants.md).
 
 ```python
-from saas_media_library import GrantScope
+from pkg_media import GrantScope
 
 grant = client.grants.issue(
     [GrantScope.READ, GrantScope.UPDATE],
@@ -1346,7 +1349,7 @@ An `upload` grant carries a profile, built from your `UploadProfile` by
 `grant_profile_payload(profile)`:
 
 ```python
-from saas_media_library import grant_profile_payload
+from pkg_media import grant_profile_payload
 
 print(grant_profile_payload(COURSE_VIDEO))
 ```
@@ -1375,7 +1378,7 @@ A mapping is passed through unchanged as the server's camelCase profile.
 The browser asks, your `authorize` callback decides, the media library signs:
 
 ```python
-from saas_media_library.integrations.fastapi import create_grant_router
+from pkg_media.integrations.fastapi import create_grant_router
 
 def get_current_user():
     """Your FastAPI auth dependency; see FastAPI integration for a full app."""
@@ -1479,8 +1482,8 @@ from dataclasses import dataclass, field
 
 from fastapi import FastAPI, Header, HTTPException
 
-from saas_media_library import AccessGate, AssetUrlCache, MediaLibraryClient
-from saas_media_library.integrations.fastapi import create_grant_router, create_media_router
+from pkg_media import AccessGate, AssetUrlCache, MediaLibraryClient
+from pkg_media.integrations.fastapi import create_grant_router, create_media_router
 
 media = MediaLibraryClient(
     base_url="https://media.example.com",
@@ -1564,7 +1567,7 @@ survive pickling, for example across process pools.
 | Any other non-2xx (400, 405, 413, 429…) | `MediaLibraryError` |
 
 ```python
-from saas_media_library import AuthenticationError, MediaLibraryError, NotFoundError
+from pkg_media import AuthenticationError, MediaLibraryError, NotFoundError
 
 try:
     client.assets.get("00000000-0000-0000-0000-000000000000")
@@ -1638,7 +1641,7 @@ as this package's own tests do. Routes are the client's paths under your
 import httpx
 import respx
 
-from saas_media_library import MediaLibraryClient, ResolveStatus
+from pkg_media import MediaLibraryClient, ResolveStatus
 
 BASE = "https://media.test"
 
@@ -1664,7 +1667,7 @@ Test your access rules without the media library's links logic by mocking
 the resolve call and checking what the gate hands out:
 
 ```python
-from saas_media_library import AccessGate
+from pkg_media import AccessGate
 
 @respx.mock
 def test_gate_denies_without_enrollment():
@@ -1712,7 +1715,7 @@ def test_grant_route_issues_for_allowed_profile():
 expiry can be tested without waiting:
 
 ```python
-from saas_media_library import DeliveryBatchResolveResult
+from pkg_media import DeliveryBatchResolveResult
 
 now = [0.0]
 test_cache = AssetUrlCache(clock=lambda: now[0], safety_margin=0)
@@ -2079,16 +2082,16 @@ MediaLibraryClient(base_url, tenant_id, token=None, timeout=30.0, http_client=No
 
 ### `ProcessingOptionsAPI` (`client.processing`)
 
-`BASE = "/v1/manage/processing-options"`, `LEGACY_BASE = "/v1/manage/resource-policies"`.
+`BASE = "/v1/manage/processing-options"`.
 
 | Method | HTTP | Returns | Raises | Does |
 |---|---|---|---|---|
-| `get_schema()` | `GET BASE/schema`, on 404 `GET LEGACY_BASE/schema` | `dict` | HTTP errors | Kinds, visibilities, MIME types, pipelines, upload defaults |
-| `get_pipelines()` | `GET BASE/pipelines`, on 404 `GET LEGACY_BASE/pipelines/available-steps` | `dict` | HTTP errors | Steps and options per kind |
+| `get_schema()` | `GET BASE/schema` | `dict` | HTTP errors | Kinds, visibilities, MIME types, pipelines, upload defaults |
+| `get_pipelines()` | `GET BASE/pipelines` | `dict` | HTTP errors | Steps and options per kind |
 
 ### `AssetsAPI` (`client.assets`)
 
-`MANAGE_BASE = "/v1/manage/assets"`, `DELIVERY_BASE = "/v1/delivery/assets"`.
+`MANAGE_BASE = "/v1/manage/assets"`.
 
 | Method | HTTP | Returns | Raises | Does |
 |---|---|---|---|---|
@@ -2100,7 +2103,6 @@ MediaLibraryClient(base_url, tenant_id, token=None, timeout=30.0, http_client=No
 | `bulk_update_visibility(asset_ids, visibility)` | `POST MANAGE_BASE/bulk-visibility` | `BulkVisibilityResult` | HTTP errors | Change visibility of up to 500 assets |
 | `list_deploys(asset_id, *, limit=50, offset=0)` | `GET MANAGE_BASE/{id}/deploys` | `WebAppDeployList` | `NotFoundError`, HTTP errors | A web app's deploys, newest first |
 | `activate_deploy(asset_id, deploy_id)` | `POST MANAGE_BASE/{id}/deploys/{deploy_id}/activate` | `WebAppDeployList` | `NotFoundError`, `ConflictError` (with `reason`), HTTP errors | Roll back a web app to a retained deploy |
-| `delivery_list(...)`, `delivery_get(asset_id)`, `delivery_resolve(asset_ids)` | as `client.delivery` | as `client.delivery` | as `client.delivery` | Kept for compatibility; call `client.delivery` (without `grants`/`cache`) |
 
 ### `DeliveryAPI` (`client.delivery`)
 
@@ -2198,7 +2200,7 @@ camelCase JSON as a `dict`.
 | `render_profiles_module(profiles)` | `str` | — | Python source defining `UPLOAD_PROFILES` |
 | `claim_upload(client, store, session_id, asset_id, *, owner, profile, check_record=None)` | `ClaimedUpload` | `UploadRejected`, HTTP errors | Verify a browser upload and attach it once, see [Uploads started by your backend](#uploads-started-by-your-backend) |
 
-### `saas_media_library.integrations.fastapi`
+### `pkg_media.integrations.fastapi`
 
 Needs the `fastapi` extra.
 
@@ -2212,7 +2214,7 @@ Needs the `fastapi` extra.
 | `ResolveRequest` | — | The media router's resolve body: `asset_ids` (`assetIds`), 1 to 100 UUIDs |
 | `MAX_RESOLVE_IDS` | `100` | Ids per resolve request |
 
-### `saas_media_library.service_uploads`
+### `pkg_media.service_uploads`
 
 All exported from the package root. See
 [Uploads started by your backend](#uploads-started-by-your-backend).
@@ -2271,6 +2273,22 @@ method emits a `DeprecationWarning`. Replacement: `AccessGate`.
 <a id="upgrading-and-server-compatibility"></a>
 ## Upgrading
 
+### From v0.26: `saas_media_library` is now `pkg_media`
+
+The package was renamed and now also carries the media gRPC contract.
+
+- Install `pkg-media` instead of `saas-media-library` (same repository;
+  tags are `pkg_media-v<version>`), and replace `saas_media_library` with
+  `pkg_media` in imports: `from pkg_media import MediaLibraryClient`.
+- `client.assets.delivery_list`, `delivery_get` and `delivery_resolve` are
+  gone: call `client.delivery.list`, `get` and `resolve`.
+- `client.processing.get_schema()` and `get_pipelines()` no longer fall back
+  to the resource-policy routes on a 404: they raise `NotFoundError`. Every
+  current server has `/manage/processing-options/*`.
+- The deprecated `client.policies` and `client.access` methods are unchanged
+  (they still warn on every call).
+- New runtime dependencies: `protobuf` and `grpcio` (the stubs import them).
+
 ### From v0.25: R2-only server
 
 - `DownloadType.PRESIGN`, `CDN` and `VOLUME_TOKEN` are gone (the server
@@ -2310,13 +2328,13 @@ Code written for v0.18 keeps working unchanged:
   every call, pointing at your call site. Python hides them outside
   `__main__` by default. Apps or test suites that turn warnings into errors
   (`-W error`, pytest `filterwarnings = error`) should ignore
-  `DeprecationWarning` from `saas_media_library` until they migrate:
+  `DeprecationWarning` from `pkg_media` until they migrate:
 
   ```toml
   [tool.pytest.ini_options]
   filterwarnings = [
       "error",
-      "ignore::DeprecationWarning:saas_media_library",
+      "ignore::DeprecationWarning:pkg_media",
   ]
   ```
 
@@ -2336,7 +2354,7 @@ During the migration window old and new calls work side by side.
 
    ```bash
    export MEDIA_LIBRARY_TOKEN=ml_live_…   # or pass --token
-   python -m saas_media_library.migrate_policies \
+   python -m pkg_media.migrate_policies \
        --base-url https://media.example.com \
        --tenant acme > app/media_profiles.py
    ```
@@ -2351,7 +2369,7 @@ During the migration window old and new calls work side by side.
    ```python
    import warnings
 
-   from saas_media_library import find_profile, policy_key, profiles_from_policies, render_profiles_module
+   from pkg_media import find_profile, policy_key, profiles_from_policies, render_profiles_module
 
    with warnings.catch_warnings():
        warnings.simplefilter("ignore", DeprecationWarning)
@@ -2432,7 +2450,7 @@ resource-policy retirement release, see the server's
 | Feature | Needs on the server | Against an older server |
 |---|---|---|
 | `client.uploads` without a resource policy (`UploadProfile`) | Policy-less uploads (`kind` on upload create) | `ValidationError` (422) |
-| `client.processing` | `/manage/processing-options/*` | Falls back to the legacy routes |
+| `client.processing` | `/manage/processing-options/*` | `NotFoundError` (404) |
 | `client.grants`, `create_grant_router` | `POST /manage/grants` and `GRANT_SIGNING_SECRET` | `NotFoundError` (404); 503 without the secret |
 | `delivery.resolve(grants=)` / `get(grants=)` | `X-Media-Grants` on `/delivery` | The header is ignored: assets a grant should cover come back `forbidden` |
 | `AccessGate`, `restricted` links with a service token | Service tokens resolve `restricted` assets | Items come back `forbidden` |
@@ -2508,11 +2526,39 @@ client adds `/v1/…` itself.
 
 ## Versioning and releases
 
-Every merge into `main` releases a new **minor** version automatically: CI
-bumps `version` in `pyproject.toml`, tags `saas_media_library-v<version>` and
-publishes a GitHub release with the wheel and sdist. A manual workflow can
-release a chosen version. There is no separate changelog: the
+Releases are cut by hand from the Actions tab. `auto-release.yml` runs the
+tests and `tools/check_compat.py`, bumps the **minor** `version` in
+`pyproject.toml`, moves `proto/baseline.binpb` forward, commits both, tags
+`pkg_media-v<version>` and publishes a GitHub release with the wheel and
+sdist. `release.yml` releases a chosen version (it does not move the
+baseline). There is no separate changelog: the
 [GitHub releases](https://github.com/fritill-team/saas_media_library_py_client/releases)
 and the commit history between tags describe each version.
 
-`saas_media_library.__version__` reports the installed version.
+`pkg_media.__version__` reports the installed version.
+
+### The gRPC contract (`proto/`)
+
+The `fritill.media.v1` protos live in `proto/fritill/media/v1/` (one file per
+service), next to `proto/fritill/conformance/v1/ping.proto`, which only
+exercises the tooling. The generated stubs in `src/pkg_media/generated/`
+are committed, together with `descriptor_set.binpb`; consumers never run a
+code generator. After changing a `.proto`:
+
+```bash
+uv sync --all-groups
+uv run --group codegen python tools/generate.py
+uv run python tools/check_compat.py
+uv run pytest
+```
+
+`tests/certify/test_stubs_are_current.py` fails when the committed stubs are
+stale. `tools/check_compat.py` compares the tree with `proto/baseline.binpb`
+(the last release) and refuses a breaking change: a removed message,
+service, method or field (without `reserved`), a changed field type or
+label, a renumbered enum value, or a dropped reservation. Only add fields,
+messages, methods or services; reserve what you remove. The release
+workflow moves the baseline forward; by hand
+(`tools/generate.py --baseline`) only for a signed-off major, in a commit
+that does nothing else. `grpcio-tools` and `mypy-protobuf` are in the
+`codegen` dependency group only, never a runtime dependency.

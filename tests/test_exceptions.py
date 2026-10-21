@@ -5,7 +5,7 @@ import pickle
 
 import pytest
 
-from saas_media_library import (
+from pkg_media import (
     MediaLibraryError,
     NotFoundError,
     ServerError,

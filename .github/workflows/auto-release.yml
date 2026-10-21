@@ -1,4 +1,4 @@
-name: Auto Release saas_media_library (minor)
+name: Auto Release pkg_media (minor)
 
 # Manual only (Actions tab → Run workflow), to save Actions minutes.
 on:
@@ -22,7 +22,18 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.12'
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+
+      # Gates: tests (stubs current, packaging, seams) and wire compatibility
+      # with the last release's descriptor set (proto/baseline.binpb).
+      - name: Test and check compatibility
+        run: |
+          uv sync --all-groups --frozen
+          uv run pytest -q
+          uv run python tools/check_compat.py
 
       - name: Compute next minor version
         id: version
@@ -31,8 +42,8 @@ jobs:
           # Extract version from file at repo root
           FILE_VER=$(sed -n 's/^version = "\(.*\)"$/\1/p' "pyproject.toml" | head -n1 || true)
 
-          # Latest tag matching saas_media_library
-          LATEST_TAG=$(git tag -l 'saas_media_library-v*' | sed -E 's/^saas_media_library-v//' | sort -V | tail -n1 || true)
+          # Latest tag matching pkg_media
+          LATEST_TAG=$(git tag -l 'pkg_media-v*' | sed -E 's/^pkg_media-v//' | sort -V | tail -n1 || true)
 
           # Choose baseline = max(FILE_VER, LATEST_TAG)
           BASELINE=$(printf '%s\n%s\n' "$FILE_VER" "$LATEST_TAG" | sed '/^$/d' | sort -V | tail -n1)
@@ -53,7 +64,7 @@ jobs:
           NEW_VER="${MAJOR}.${NEW_MINOR}.0"
 
           # Ensure tag uniqueness; bump until free
-          while git rev-parse -q --verify "refs/tags/saas_media_library-v${NEW_VER}" >/dev/null; do
+          while git rev-parse -q --verify "refs/tags/pkg_media-v${NEW_VER}" >/dev/null; do
             NEW_MINOR=$((NEW_MINOR + 1))
             NEW_VER="${MAJOR}.${NEW_MINOR}.0"
           done
@@ -61,7 +72,7 @@ jobs:
           echo "new=$NEW_VER" >> "$GITHUB_OUTPUT"
           echo "baseline=$BASELINE" >> "$GITHUB_OUTPUT"
           echo "file=$FILE_VER" >> "$GITHUB_OUTPUT"
-          echo "tag=saas_media_library-v$NEW_VER" >> "$GITHUB_OUTPUT"
+          echo "tag=pkg_media-v$NEW_VER" >> "$GITHUB_OUTPUT"
           echo "Next version: $NEW_VER (baseline: $BASELINE)"
 
       - name: Update pyproject.toml version
@@ -73,14 +84,19 @@ jobs:
           rm -f pyproject.toml.bak
           echo "pyproject.toml updated to $NEW_VER"
 
+      # The baseline advances on every release, after the green check above,
+      # in the same commit as the version.
+      - name: Move the compatibility baseline forward
+        run: uv run --frozen python tools/generate.py --baseline
+
       - name: Commit version bump
         env:
           NEW_VER: ${{ steps.version.outputs.new }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add pyproject.toml
-          git commit -m "chore(saas_media_library): release v${NEW_VER} [skip ci]" || echo "No changes to commit"
+          git add pyproject.toml proto/baseline.binpb
+          git commit -m "chore(pkg_media): release v${NEW_VER} [skip ci]" || echo "No changes to commit"
           git push origin HEAD:${{ github.ref_name }} || true
 
       - name: Create tag
@@ -88,18 +104,15 @@ jobs:
           NEW_VER: ${{ steps.version.outputs.new }}
         run: |
           set -e
-          TAG="saas_media_library-v${NEW_VER}"
+          TAG="pkg_media-v${NEW_VER}"
           if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
             echo "Tag $TAG already exists locally"; else
-            git tag -a "$TAG" -m "saas_media_library $NEW_VER"
+            git tag -a "$TAG" -m "pkg_media $NEW_VER"
           fi
           git push origin "$TAG"
 
       - name: Build artifacts (sdist + wheel)
-        run: |
-          python -m pip install --upgrade pip
-          pip install build
-          python -m build
+        run: uv build
 
       - name: Capture artifact names
         id: artifacts
@@ -114,9 +127,9 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.tag }}
-          name: saas_media_library v${{ steps.version.outputs.new }}
+          name: pkg_media v${{ steps.version.outputs.new }}
           body: |
-            Auto release for saas_media_library.
+            Auto release for pkg_media (distribution pkg-media).
 
             Install directly from the tag:
 

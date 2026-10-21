@@ -7,7 +7,7 @@ import httpx
 import pytest
 import respx
 
-from saas_media_library import MediaLibraryClient
+from pkg_media import MediaLibraryClient
 
 
 BASE_URL = "https://media.test"
@@ -117,7 +117,7 @@ def test_policy_methods_warn_once_at_the_caller(server, method) -> None:
 
 
 def test_every_public_policy_method_is_covered() -> None:
-    from saas_media_library.resource_policies import ResourcePoliciesAPI
+    from pkg_media.resource_policies import ResourcePoliciesAPI
 
     public = {n for n in vars(ResourcePoliciesAPI) if not n.startswith("_") and callable(getattr(ResourcePoliciesAPI, n))}
     assert public == set(POLICY_CALLS) | {"get_schema", "get_available_steps"}
@@ -175,7 +175,7 @@ def test_get_schema_points_at_processing(server) -> None:
 
 
 def test_warning_keeps_method_metadata() -> None:
-    from saas_media_library.resource_policies import ResourcePoliciesAPI
+    from pkg_media.resource_policies import ResourcePoliciesAPI
 
     assert ResourcePoliciesAPI.upsert.__name__ == "upsert"
     assert "Create or update a resource policy" in ResourcePoliciesAPI.upsert.__doc__
@@ -186,7 +186,7 @@ def test_deprecated_call_still_raises_errors(server) -> None:
     server.get(f"/v1/manage/resource-policies/{missing}").mock(
         return_value=httpx.Response(404, json={"detail": "nope"}))
 
-    from saas_media_library import NotFoundError
+    from pkg_media import NotFoundError
 
     with _make_client() as client, pytest.warns(DeprecationWarning), pytest.raises(NotFoundError):
         client.policies.get(missing)
@@ -212,7 +212,7 @@ def test_access_methods_warn_at_the_caller(server, method) -> None:
 
 
 def test_every_public_access_method_is_covered() -> None:
-    from saas_media_library.asset_access import AssetAccessAPI
+    from pkg_media.asset_access import AssetAccessAPI
 
     public = {n for n in vars(AssetAccessAPI) if not n.startswith("_") and callable(getattr(AssetAccessAPI, n))}
     assert public == set(ACCESS_CALLS)

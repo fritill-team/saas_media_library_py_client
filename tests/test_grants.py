@@ -10,7 +10,7 @@ import respx
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from saas_media_library import (
+from pkg_media import (
     AssetKind,
     AuthenticationError,
     GrantScope,
@@ -21,7 +21,7 @@ from saas_media_library import (
     Visibility,
     grant_profile_payload,
 )
-from saas_media_library.integrations.fastapi import create_grant_router
+from pkg_media.integrations.fastapi import create_grant_router
 
 BASE_URL = "https://media.test"
 GRANTS_URL = f"{BASE_URL}/v1/manage/grants"
@@ -182,7 +182,7 @@ def test_resolve_sends_every_grant_in_one_header():
 
     with pytest.raises(ValueError):
         client.delivery.resolve(ids, grants=[f"mlg_{i}" for i in range(11)])
-    from saas_media_library import AssetUrlCache
+    from pkg_media import AssetUrlCache
     with pytest.raises(ValueError):
         client.delivery.resolve(ids, grants=["mlg_a"], cache=AssetUrlCache())
 

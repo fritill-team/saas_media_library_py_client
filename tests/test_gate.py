@@ -9,7 +9,7 @@ import httpx
 import pytest
 import respx
 
-from saas_media_library import (
+from pkg_media import (
     AccessGate,
     AssetUrlCache,
     AuthenticationError,
@@ -299,7 +299,7 @@ def test_service_forbidden_for_allowed_asset_warns_about_token(server, caplog) -
                           "error": "RESTRICTED asset is only available through the owning application"})
     gate = AccessGate(_make_client(), Recorder([asset_id]))
 
-    with caplog.at_level(logging.WARNING, logger="saas_media_library.gate"):
+    with caplog.at_level(logging.WARNING, logger="pkg_media.gate"):
         [result] = gate.resolve("u", [asset_id])
 
     assert result.status == ResolveStatus.FORBIDDEN and result.asset is None

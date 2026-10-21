@@ -1,30 +1,62 @@
+# pkg_media: the media library's client (HTTP and gRPC transports), its consumer
+# helpers, and the fritill.media.v1 gRPC contract (protos, committed stubs,
+# servicer base classes, wire-path and reason constants). The media server
+# installs it for the contract; app backends install it for the client.
+
 [build-system]
-requires = ["setuptools>=68.0", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [project]
-name = "saas-media-library"
+name = "pkg-media"
+# The release workflow (auto-release.yml) bumps this line and tags what it wrote.
 version = "0.25.0"
-description = "Python client for SaaS Media Library API"
+description = "Client, helpers and gRPC contract (fritill.media.v1) for the ITQ media library"
 readme = "README.md"
+# A package floor, not a service runtime: consumers pick their interpreter.
 requires-python = ">=3.11"
-license = {text = "MIT"}
+license = { text = "MIT" }
+classifiers = ["Private :: Do Not Upload"]
+
+# Runtime only. Codegen tools (grpcio-tools, mypy-protobuf) never go here:
+# stubs are generated in this repo and committed (tests/test_packaging.py).
+# `grpcio` is required because every `_pb2_grpc.py` imports it at module scope.
 dependencies = [
     "httpx>=0.25.0,<1.0",
     "pydantic>=2.0,<3.0",
+    "protobuf>=7.35.1,<8",
+    "grpcio>=1.84.0",
 ]
 
 [project.optional-dependencies]
-fastapi = [
-    "fastapi>=0.100",
-]
+fastapi = ["fastapi>=0.100"]
+
+[dependency-groups]
+# `build` is needed by tests/test_packaging.py (it builds a real wheel);
+# without it those tests skip.
 dev = [
     "pytest>=7.0",
     "pytest-asyncio>=0.21",
     "respx>=0.21",
     "fastapi>=0.100",
-    "httpx>=0.25.0,<1.0",
+    "build>=1.2",
+    "hatchling",
+]
+# Separate from `dev` on purpose: nothing installs the compiler by accident.
+# `uv sync --all-groups` takes it (CI, and anyone running tools/generate.py).
+codegen = [
+    "grpcio-tools==1.84.0",
+    "mypy-protobuf==5.1.0",
 ]
 
-[tool.setuptools.packages.find]
-where = ["src"]
+[tool.uv]
+default-groups = ["dev", "codegen"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pkg_media"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/pkg_media", "proto/fritill", "README.md", "pyproject.toml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

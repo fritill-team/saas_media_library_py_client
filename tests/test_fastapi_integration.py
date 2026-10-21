@@ -11,9 +11,9 @@ import respx
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.testclient import TestClient
 
-from saas_media_library import AccessGate, AssetUrlCache, MediaLibraryClient
-from saas_media_library.exceptions import MediaLibraryError
-from saas_media_library.integrations.fastapi import MAX_RESOLVE_IDS, create_media_router
+from pkg_media import AccessGate, AssetUrlCache, MediaLibraryClient
+from pkg_media.exceptions import MediaLibraryError
+from pkg_media.integrations.fastapi import MAX_RESOLVE_IDS, create_media_router
 
 
 BASE_URL = "https://media.test"

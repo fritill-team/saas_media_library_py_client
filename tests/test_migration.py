@@ -9,7 +9,7 @@ import httpx
 import pytest
 import respx
 
-from saas_media_library import (
+from pkg_media import (
     AssetKind,
     ProcessingConfig,
     ResourcePolicy,
@@ -20,7 +20,7 @@ from saas_media_library import (
     profiles_from_policies,
     render_profiles_module,
 )
-from saas_media_library.migrate_policies import main
+from pkg_media.migrate_policies import main
 
 
 BASE_URL = "https://media.test"
@@ -286,7 +286,7 @@ def test_rendered_module_is_readable() -> None:
     source = render_profiles_module(profiles_from_policies([_policy("courses", "video")]))
 
     assert source.startswith('"""Upload profiles converted from resource policies.')
-    assert "from saas_media_library import AssetKind, ProcessingConfig, UploadProfile, Visibility" in source
+    assert "from pkg_media import AssetKind, ProcessingConfig, UploadProfile, Visibility" in source
     assert "    'courses/video': UploadProfile(\n" in source
     assert "        kind=AssetKind.VIDEO,\n" in source
     assert "        visibility=Visibility.RESTRICTED,\n" in source
@@ -376,7 +376,7 @@ def test_cli_reports_server_errors(capsys) -> None:
 
 def test_cli_runs_as_module() -> None:
     proc = subprocess.run(
-        [sys.executable, "-m", "saas_media_library.migrate_policies", "--help"],
+        [sys.executable, "-m", "pkg_media.migrate_policies", "--help"],
         capture_output=True, text=True, check=False,
     )
 

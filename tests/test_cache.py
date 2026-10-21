@@ -6,7 +6,7 @@ from uuid import uuid4
 
 import pytest
 
-from saas_media_library import AssetUrlCache, DeliveryBatchResolveResult
+from pkg_media import AssetUrlCache, DeliveryBatchResolveResult
 
 
 class FakeClock:

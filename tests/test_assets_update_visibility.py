@@ -6,7 +6,7 @@ import httpx
 import pytest
 import respx
 
-from saas_media_library import MediaLibraryClient, MediaLibraryError, Visibility
+from pkg_media import MediaLibraryClient, MediaLibraryError, Visibility
 
 
 BASE_URL = "https://media.test"
@@ -133,7 +133,7 @@ def test_get_parses_preview_urls_of_asset_renditions_and_variants() -> None:
 
 
 def test_preview_urls_default_to_none() -> None:
-    from saas_media_library import Asset
+    from pkg_media import Asset
 
     asset = Asset.model_validate(_asset_response(uuid4(), "public"))
 

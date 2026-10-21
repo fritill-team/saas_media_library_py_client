@@ -10,7 +10,7 @@ import respx
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.testclient import TestClient
 
-from saas_media_library import (
+from pkg_media import (
     AssetKind,
     InMemoryUploadStore,
     MediaLibraryClient,
@@ -21,7 +21,7 @@ from saas_media_library import (
     Visibility,
     claim_upload,
 )
-from saas_media_library.integrations.fastapi import create_upload_router
+from pkg_media.integrations.fastapi import create_upload_router
 
 
 BASE_URL = "https://media.test"
