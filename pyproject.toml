@@ -26,6 +26,9 @@ dependencies = [
     "pydantic>=2.0,<3.0",
     "protobuf>=7.35.1,<8",
     "grpcio>=1.84.0",
+    # Rich errors: google.rpc.ErrorInfo in the status details (AD-10).
+    "grpcio-status>=1.84.0",
+    "googleapis-common-protos>=1.75.5",
 ]
 
 [project.optional-dependencies]

@@ -1,0 +1,37 @@
+// Processing: metadata for building upload settings.
+//
+// Both answers are JSON-shaped documents (google.protobuf.Struct) with the
+// HTTP API's camelCase keys, so media can add keys and step options without
+// a contract change. Struct carries every number as a double; the client
+// turns whole numbers back into integers.
+//
+// Refusals (ErrorInfo.domain = "fritill.media.v1.Processing"): only the
+// common ones in common.proto.
+
+syntax = "proto3";
+
+package fritill.media.v1;
+
+import "google/protobuf/struct.proto";
+
+service Processing {
+  // GET /manage/processing-options/schema: kinds, visibilities,
+  // mimeTypesByKind, pipelinesByKind, autoStartSteps, gatedSteps,
+  // transcriptionAvailable, uploadDefaults. Read-only.
+  rpc GetProcessingSchema(GetProcessingSchemaRequest) returns (GetProcessingSchemaResponse);
+  // GET /manage/processing-options/pipelines: steps and their options per
+  // kind. Read-only.
+  rpc GetProcessingPipelines(GetProcessingPipelinesRequest) returns (GetProcessingPipelinesResponse);
+}
+
+message GetProcessingSchemaRequest {}
+
+message GetProcessingSchemaResponse {
+  google.protobuf.Struct schema = 1;
+}
+
+message GetProcessingPipelinesRequest {}
+
+message GetProcessingPipelinesResponse {
+  google.protobuf.Struct pipelines = 1;
+}

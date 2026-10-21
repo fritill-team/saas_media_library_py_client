@@ -2552,6 +2552,36 @@ uv run python tools/check_compat.py
 uv run pytest
 ```
 
+The package exports what both sides need:
+
+- `pkg_media.contract`: the servicer base classes (`AssetsServicer`,
+  `UploadsServicer`, `GrantsServicer`, `PermalinksServicer`,
+  `DeliveryServicer`, `ProcessingServicer`), their `add_*_to_server`
+  functions, the stubs, the message modules (`assets_pb2`…),
+  `refusal_status(service, reason, message)` (a status carrying
+  `google.rpc.ErrorInfo(domain=<service full name>, reason)`) and
+  `error_info(rpc_error)`.
+- `pkg_media.methods`: every method's wire path
+  (`methods.Assets.GET_ASSET == "/fritill.media.v1.Assets/GetAsset"`),
+  `MUTATING_METHODS` (they need the `idempotency-key` metadata) and
+  `READ_ONLY_METHODS`.
+- `pkg_media.reasons`: the reason constants, `REFUSALS` (each service's
+  reasons with their gRPC status, as documented in the protos) and
+  `grpc_status_for_http(code)` (400/422 → `INVALID_ARGUMENT`, 401 →
+  `UNAUTHENTICATED`, 403 → `PERMISSION_DENIED`, 404 → `NOT_FOUND`, 409/410
+  → `FAILED_PRECONDITION`, 429 → `RESOURCE_EXHAUSTED`, 503 → `UNAVAILABLE`,
+  else `INTERNAL`).
+
+The services are `Assets`, `Uploads`, `Grants`, `Permalinks`, `Delivery`
+and `Processing`, unary only. File bytes never travel over gRPC:
+`Uploads.OpenSession` returns a session and an upload grant for it, the
+browser sends the parts to media's HTTP endpoints, and the service checks
+the result with `Uploads.GetSession` and `Assets.GetAsset`. Resource
+policies and asset access stay HTTP-only. `tests/test_media_contract.py`
+checks the contract: no streaming, the error domain is the service name,
+every refusal is documented, no request carries an idempotency key or a
+credential.
+
 `tests/certify/test_stubs_are_current.py` fails when the committed stubs are
 stale. `tools/check_compat.py` compares the tree with `proto/baseline.binpb`
 (the last release) and refuses a breaking change: a removed message,

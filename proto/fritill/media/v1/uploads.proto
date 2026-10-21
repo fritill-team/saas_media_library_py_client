@@ -1,0 +1,113 @@
+// Uploads: upload sessions without the bytes.
+//
+// Bytes never pass through gRPC or the calling service. The service opens a
+// session (OpenSession, which also returns an upload grant scoped to that one
+// session); the browser sends the parts and finalizes on media's HTTP
+// endpoints (/manage/uploads/sessions/{id}/...) through itqadem's same-origin
+// proxy; the service then checks the result with GetSession and
+// Assets.GetAsset before it stores the asset id.
+//
+// Refusals (ErrorInfo.domain = "fritill.media.v1.Uploads"), besides the common
+// ones in common.proto:
+//
+// | reason | status | kind |
+// | --- | --- | --- |
+// | session_not_found | NOT_FOUND | permanent |
+// | session_expired | FAILED_PRECONDITION | permanent |
+// | invalid_session_state | FAILED_PRECONDITION | permanent |
+// | checksum_mismatch | FAILED_PRECONDITION | permanent |
+// | incomplete_upload | INVALID_ARGUMENT | permanent |
+// | file_size_mismatch | INVALID_ARGUMENT | permanent |
+// | file_size_limit_exceeded | INVALID_ARGUMENT | permanent |
+// | unsupported_mime_type | INVALID_ARGUMENT | permanent |
+// | invalid_processing_config | INVALID_ARGUMENT | permanent |
+// | grants_not_configured | UNAVAILABLE | transient |
+//
+// `grants_not_configured`: OpenSession could not sign the upload grant
+// (media has no GRANT_SIGNING_SECRET); no session is left open.
+
+syntax = "proto3";
+
+package fritill.media.v1;
+
+import "fritill/media/v1/common.proto";
+import "google/protobuf/timestamp.proto";
+
+service Uploads {
+  // Create a session and an upload grant for it. Mutating.
+  rpc OpenSession(OpenSessionRequest) returns (OpenSessionResponse);
+  // A session's state and progress. Read-only.
+  rpc GetSession(GetSessionRequest) returns (GetSessionResponse);
+  // Assemble the uploaded parts into an asset. Mutating.
+  rpc FinalizeSession(FinalizeSessionRequest) returns (FinalizeSessionResponse);
+  // Abort a session and delete its parts (and the blob of a finalized one). Mutating.
+  rpc AbortSession(AbortSessionRequest) returns (AbortSessionResponse);
+}
+
+message UploadSession {
+  string id = 1;
+  // "initiated" | "in_progress" | "finalized" | "failed" | "expired" | "aborted".
+  string state = 2;
+  int64 part_size_bytes = 3;
+  optional int32 parts_expected = 4;
+  int32 parts_received = 5;
+  repeated int32 received_parts = 6;
+  google.protobuf.Timestamp expires_at = 7;
+  bool checksum_verified = 8;
+  optional string final_blob_id = 9;
+}
+
+message OpenSessionRequest {
+  // Normalized by the client ("image/png").
+  string mime_type = 1;
+  string kind = 2;
+  // Unset: "private".
+  optional string visibility = 3;
+  // Unset: no step options, transcription off.
+  ProcessingConfig processing_config = 4;
+  optional string original_filename = 5;
+  optional int64 expected_size_bytes = 6;
+  optional string expected_sha256_hex = 7;
+  optional string collection_name = 8;
+  // The app's user reference, recorded on the grant for audit.
+  optional string subject = 9;
+  // The grant's lifetime; unset: media's default (600 s).
+  optional int32 grant_ttl_seconds = 10;
+}
+
+message OpenSessionResponse {
+  UploadSession session = 1;
+  // An `upload` grant for this session only.
+  Grant grant = 2;
+}
+
+message GetSessionRequest {
+  string session_id = 1;
+}
+
+message GetSessionResponse {
+  UploadSession session = 1;
+}
+
+message FinalizeSessionRequest {
+  string session_id = 1;
+  // When set, media verifies the whole file (checksum_mismatch otherwise).
+  optional string expected_sha256_hex = 2;
+}
+
+message FinalizeSessionResponse {
+  string session_id = 1;
+  string final_blob_id = 2;
+  string asset_id = 3;
+  bool checksum_verified = 4;
+  string sha256_hex = 5;
+}
+
+message AbortSessionRequest {
+  string session_id = 1;
+}
+
+message AbortSessionResponse {
+  string session_id = 1;
+  bool aborted = 2;
+}
