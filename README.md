@@ -1275,30 +1275,49 @@ is thread-safe when `can_access` is.
 
 ### The media router
 
-With FastAPI, `create_media_router(gate, get_current_user, *, prefix="/media")`
-exposes the gate:
+Browsers read assets through your service: its media resolve router runs
+your `can_access`, then resolves the allowed ids through `pkg_media`. The
+browser needs no read grant and your frontend server holds no media
+credential (nuxt-module: `backends.<name>.resolve`).
+
+```python
+from pkg_media import AssetUrlCache
+from pkg_media.integrations.fastapi import create_media_router
+
+app.include_router(create_media_router(media, can_access, get_current_user, cache=AssetUrlCache()))
+```
+
+`create_media_router(client, can_access, get_current_user, *, cache=None,
+prefix="/media", thumbnails=True)`:
 
 | Route | Same as | Responses |
 |---|---|---|
-| `POST {prefix}/resolve` with `{"assetIds": [...]}` (1 to 100) | `POST /delivery/assets/resolve` | 200 with `{"items", "total"}` |
+| `POST {prefix}/resolve` with `{"assetIds": [...]}` (1 to 100) | `POST /delivery/assets/resolve` | 200 with `{"items": [{"assetId", "status", "thumbnailUrl", "asset", "error"}], "total"}` |
 | `GET {prefix}/{asset_id}` | `GET /delivery/assets/{id}` | 200 asset; 403 `{"detail", "thumbnailUrl"}`; 404; 502 |
 
+`client` is a sync `MediaClient` (HTTP or gRPC) calling as your service.
 `get_current_user` is your FastAPI dependency; what it returns is passed to
-`can_access`. The routes are sync and run in FastAPI's threadpool.
+`can_access(user, asset_ids)`, called once per request with every id. Ids
+it allows are resolved (batches of 100) and come back as media answers them
+(`ok`, `not_found`, `error`). **Every id it refuses comes back `forbidden`**,
+even one that does not exist, with at most the asset's public thumbnail
+(`thumbnailUrl`, for a locked teaser); never a download link. With
+`thumbnails=False`, refused ids are not sent to the media library at all.
+The routes are sync and run in FastAPI's threadpool.
 
-Failures talking to the media library (error responses, connection errors,
+Failures talking to the media library (error statuses, connection errors,
 timeouts, malformed responses) answer 502 with
-`{"detail": "Media library request failed"}`, so an expired service token is
-not mistaken for the user's own 401; the cause is logged. Exceptions from
-`get_current_user` are never turned into a 502. Exceptions from `can_access`
-stay 500 (or go to your exception handlers), even `httpx` or `pydantic`
-errors, with one exception: a `MediaLibraryError` raised by `can_access`
-(for example from a media library call it makes itself) cannot be told apart
-from the gate's own and answers 502. A `GET` whose result is `error` answers
-502 with the result's `error` and `thumbnailUrl`.
+`{"detail": "Media library request failed"}`, so an expired service
+credential is not mistaken for the user's own 401; the cause is logged.
+Exceptions from `get_current_user` are never turned into a 502. Exceptions
+from `can_access` stay 500 (or go to your exception handlers), even `httpx`
+or `pydantic` errors, with one exception: a `MediaLibraryError` raised by
+`can_access` (for example from a media call it makes itself) cannot be told
+apart from the router's own and answers 502. A `GET` whose result is
+`error` answers 502 with the result's `error` and `thumbnailUrl`.
 
-The frontend only changes its base URL for restricted assets. See
-[FastAPI integration](#fastapi-integration) for a full app.
+The router builds an `AccessGate(client, can_access, cache=cache,
+hide_missing=True)`; use the gate directly for other frameworks.
 
 ## Give browsers access with media grants
 
@@ -1508,8 +1527,11 @@ trust each other.
 
 ## FastAPI integration
 
-Both routers in one app. Replace `get_current_user` with your own auth
-dependency; whatever it returns is passed to `can_access` and `authorize`.
+Both routers in one app (`pip install "pkg-media[fastapi]"`; FastAPI is an
+optional extra and `import pkg_media` never needs it). Replace
+`get_current_user` with your own auth dependency; whatever it returns is
+passed to `can_access` and `authorize`. Every router works with either
+transport.
 
 ```python
 import os
@@ -1517,13 +1539,15 @@ from dataclasses import dataclass, field
 
 from fastapi import FastAPI, Header, HTTPException
 
-from pkg_media import AccessGate, AssetUrlCache, MediaLibraryClient
+from pkg_media import AssetUrlCache, MediaClient
 from pkg_media.integrations.fastapi import create_grant_router, create_media_router
 
-media = MediaLibraryClient(
-    base_url="https://media.example.com",
-    tenant_id="acme",
-    token=os.environ["MEDIA_LIBRARY_TOKEN"],  # the tenant's service token
+media = MediaClient(
+    transport="grpc",
+    target="media-library-grpc.media-library:50051",
+    token_url="https://sso.example.com/realms/Itqadem/protocol/openid-connect/token",
+    client_id="courses-service",
+    client_secret=os.environ["MEDIA_CLIENT_SECRET"],
 )
 
 @dataclass
@@ -1552,7 +1576,7 @@ def authorize(user, request, profile):
     return all(user.can_edit(a) for a in request.asset_ids)
 
 app = FastAPI()
-app.include_router(create_media_router(AccessGate(media, can_access, cache=AssetUrlCache()), get_current_user))
+app.include_router(create_media_router(media, can_access, get_current_user, cache=AssetUrlCache()))
 app.include_router(create_grant_router(
     media, authorize, get_current_user,
     profiles={"course-cover": COURSE_COVER},  # from Define an upload profile
@@ -2202,10 +2226,13 @@ one in the same service (`client.assets.get` → `Assets.GetAsset`, see
 ### `AccessGate`
 
 ```
-AccessGate(client, can_access, *, cache=None)
+AccessGate(client, can_access, *, cache=None, hide_missing=False, resolve_denied=True)
 ```
 
-`DENIED_ERROR = "Access denied"`. `cache` is an attribute.
+`DENIED_ERROR = "Access denied"`. `cache` is an attribute. `client` is a
+sync `MediaClient` on either transport. `hide_missing=True`: every refused
+id is `forbidden`, even a missing one. `resolve_denied=False`: refused ids
+are not sent to the media library (no thumbnail; implies `hide_missing`).
 
 | Method | HTTP | Returns | Raises | Does |
 |---|---|---|---|---|
@@ -2269,7 +2296,7 @@ Needs the `fastapi` extra.
 
 | Name | Returns | Does |
 |---|---|---|
-| `create_media_router(gate, get_current_user, *, prefix="/media")` | `APIRouter` | `POST {prefix}/resolve`, `GET {prefix}/{asset_id}`, see [The media router](#the-media-router) |
+| `create_media_router(client, can_access, get_current_user, *, cache=None, prefix="/media", thumbnails=True)` | `APIRouter` | `POST {prefix}/resolve`, `GET {prefix}/{asset_id}`, see [The media router](#the-media-router) |
 | `create_grant_router(client, authorize, get_current_user, *, profiles=None, get_subject=None, ttl_seconds=None, prefix="/media")` | `APIRouter` | `POST {prefix}/grants`, see [Let the browser ask for grants](#let-the-browser-ask-for-grants) |
 | `create_upload_router(client, can_start, get_current_user, *, profiles, store, get_owner, upload_base_url=None, ttl_seconds=None, prefix="/uploads")` | `APIRouter` | `POST {prefix}` and `POST {prefix}/{session_id}/grant`, see [Uploads started by your backend](#uploads-started-by-your-backend). `upload_base_url` is optional and returned to browsers as is; the client's `base_url` never is. Raises `ValueError` for no profiles, or a profile whose `name` is not its key |
 | `GrantRequest` | — | The grant router's request body |
@@ -2350,7 +2377,24 @@ The package was renamed and now also carries the media gRPC contract.
   current server has `/manage/processing-options/*`.
 - The deprecated `client.policies` and `client.access` methods are unchanged
   (they still warn on every call).
-- New runtime dependencies: `protobuf` and `grpcio` (the stubs import them).
+- New runtime dependencies: `protobuf`, `grpcio`, `grpcio-status` and
+  `googleapis-common-protos`.
+- `X-Tenant` is no longer sent. Upgrade only once the media server ignores
+  it (the tenancy-retirement release A1). `tenant_id` is optional and only
+  scopes `AssetUrlCache` entries.
+- `MediaLibraryClient` is now `MediaClient` over HTTP; `MediaClient` and
+  `AsyncMediaClient` add the gRPC transport and Keycloak client
+  credentials. `http_client` must be an `httpx.AsyncClient`.
+- Errors are one class per gRPC status, subclassing the earlier classes.
+  HTTP 400 now raises `InvalidArgumentError` (a `ValidationError`), 429
+  `ResourceExhaustedError` and other 5xx `InternalError`.
+- `create_media_router(gate, get_current_user)` is now
+  `create_media_router(client, can_access, get_current_user, cache=...)`,
+  and every id `can_access` refuses comes back `forbidden` (no longer
+  `not_found` for a missing asset). `AccessGate` itself is unchanged
+  unless you pass `hide_missing=True`.
+- `create_upload_router` starts uploads with `uploads.open_session`; its
+  start response carries `tenant` only when the client has a `tenant_id`.
 
 ### From v0.25: R2-only server
 

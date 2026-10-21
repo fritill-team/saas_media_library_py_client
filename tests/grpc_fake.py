@@ -131,6 +131,9 @@ class FakeMedia:
     failures: Dict[str, List[Union[grpc.StatusCode, grpc.Status]]] = field(default_factory=lambda: defaultdict(list))
     sessions: Dict[str, uploads_pb2.UploadSession] = field(default_factory=dict)
     assets: Dict[str, common_pb2.Asset] = field(default_factory=dict)
+    # Delivery resolve answers: ids the service may not open, and unknown ids.
+    forbidden: set = field(default_factory=set)
+    missing: set = field(default_factory=set)
     lock: threading.Lock = field(default_factory=threading.Lock)
 
     def fail(self, path: str, *outcomes: Union[grpc.StatusCode, grpc.Status]) -> None:
@@ -284,10 +287,12 @@ class _Delivery(contract.DeliveryServicer):
         self.fake.enter(methods.Delivery.RESOLVE_DELIVERY_ASSETS, request, context)
         items = []
         for a in request.asset_ids:
-            if a.endswith("0"):
+            if a in self.fake.forbidden:
                 items.append(delivery_pb2.ResolveDeliveryAssetsItem(
                     asset_id=a, status="forbidden", thumbnail_url=f"https://media.test/t/{a}"
                 ))
+            elif a in self.fake.missing:
+                items.append(delivery_pb2.ResolveDeliveryAssetsItem(asset_id=a, status="not_found"))
             else:
                 items.append(delivery_pb2.ResolveDeliveryAssetsItem(
                     asset_id=a, status="ok", asset=delivery_asset_message(a)

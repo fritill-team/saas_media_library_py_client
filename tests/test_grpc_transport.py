@@ -287,6 +287,7 @@ def test_visibility_deploys_and_bulk(client) -> None:
 
 def test_delivery_resolve_batches_and_keeps_statuses(client, fake) -> None:
     ids = [UUID(int=i + 1) for i in range(150)]
+    fake.forbidden.add(str(ids[9]))
     results = client.delivery.resolve(ids)
     assert [len(c.request.asset_ids) for c in fake.calls_to(methods.Delivery.RESOLVE_DELIVERY_ASSETS)] == [100, 50]
     assert [r.asset_id for r in results] == ids

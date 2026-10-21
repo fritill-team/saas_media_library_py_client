@@ -56,20 +56,25 @@ class AccessGate:
         gate = AccessGate(service_client, can_access, cache=AssetUrlCache())
         results = gate.resolve(current_user, asset_ids)
 
-    ``client`` must be a ``MediaLibraryClient`` created with the tenant's
-    **service token**: only a service token gets links for RESTRICTED assets.
-    With a user token the media library answers ``forbidden`` for them (a
-    warning is logged), and grant-based access is going away.
+    ``client`` is a sync ``MediaClient`` (HTTP or gRPC transport) calling as
+    the app's **service** (Keycloak client credentials or a service token):
+    only a service gets links for RESTRICTED assets. Otherwise the media
+    library answers ``forbidden`` for them (a warning is logged).
 
-    Every id is resolved with the service token (through ``cache``, when
-    given, scoped to the client's tenant), including the ones the app
+    Every id is resolved as the service (through ``cache``, when given,
+    scoped to the client's ``tenant_id``), including the ones the app
     denies, which only get the asset's public thumbnail (``thumbnail_url``).
     Results come back one per requested id, in order:
 
     - allowed: the media library's result (``ok``, ``not_found``, ``error``).
     - denied: ``forbidden`` with ``asset=None`` and at most a
       ``thumbnail_url``; never a download or other preview link. An asset
-      that does not exist is still ``not_found``, as on the server.
+      that does not exist is still ``not_found``, as on the server, unless
+      ``hide_missing`` is set: then every denied id is ``forbidden``, so a
+      user cannot tell which ids exist.
+
+    ``resolve_denied=False`` sends only the allowed ids to the media
+    library: denied ids come back ``forbidden`` without a thumbnail.
 
     ``to_payload`` turns the results into the exact JSON of
     ``POST /delivery/assets/resolve``, so a frontend only changes its base
@@ -90,10 +95,14 @@ class AccessGate:
         can_access: CanAccess,
         *,
         cache: Optional[AssetUrlCache] = None,
+        hide_missing: bool = False,
+        resolve_denied: bool = True,
     ):
         self._client = client
         self._can_access = can_access
         self.cache = cache
+        self.hide_missing = hide_missing or not resolve_denied
+        self.resolve_denied = resolve_denied
 
     def resolve(
         self,
@@ -111,24 +120,26 @@ class AccessGate:
         unique = list(dict.fromkeys(ids))
 
         allowed = self._allowed_ids(user, unique)
-        resolved = self._resolve_with_service(unique)
+        to_resolve = unique if self.resolve_denied else [a for a in unique if a in allowed]
+        resolved = self._resolve_with_service(to_resolve) if to_resolve else {}
 
         by_id: Dict[UUID, DeliveryBatchResolveResult] = {}
         for asset_id in unique:
-            item = resolved[asset_id]
+            item = resolved.get(asset_id)
             if asset_id not in allowed:
                 # Built from scratch: nothing of the service result but the
                 # thumbnail reaches a denied user.
-                if item.status == ResolveStatus.NOT_FOUND:
+                if item is not None and item.status == ResolveStatus.NOT_FOUND and not self.hide_missing:
                     by_id[asset_id] = DeliveryBatchResolveResult(
                         asset_id=asset_id, status=ResolveStatus.NOT_FOUND
                     )
                 else:
-                    by_id[asset_id] = _forbidden(asset_id, thumbnail_url(item), self.DENIED_ERROR)
+                    thumbnail = thumbnail_url(item) if item is not None else None
+                    by_id[asset_id] = _forbidden(asset_id, thumbnail, self.DENIED_ERROR)
             elif item.status == ResolveStatus.FORBIDDEN:
                 logger.warning(
                     "Media library denied asset %s to the gate's client; "
-                    "AccessGate needs a client created with a tenant service token",
+                    "AccessGate needs a client calling as the app's service (client credentials or a service token)",
                     asset_id,
                 )
                 by_id[asset_id] = _forbidden(asset_id, item.thumbnail_url, item.error)

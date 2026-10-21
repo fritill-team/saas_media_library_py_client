@@ -119,10 +119,10 @@ def app(enrollments, seen_users):
         return {"id": x_user}
 
     client = MediaLibraryClient(base_url=BASE_URL, tenant_id=TENANT_ID, token="service-token")
-    gate = AccessGate(client, can_access, cache=AssetUrlCache())
+    cache = AssetUrlCache()
     app = FastAPI()
-    app.include_router(create_media_router(gate, get_current_user))
-    app.include_router(create_media_router(gate, get_current_user, prefix="/api/v2/files"))
+    app.include_router(create_media_router(client, can_access, get_current_user, cache=cache))
+    app.include_router(create_media_router(client, can_access, get_current_user, cache=cache, prefix="/api/v2/files"))
     return app
 
 
@@ -137,7 +137,7 @@ def http(app):
 def test_resolve_returns_server_shaped_payload(media, http, enrollments) -> None:
     ok_id, denied_id, missing_id = str(uuid4()), str(uuid4()), str(uuid4())
     media.missing.add(missing_id)
-    enrollments["alice"] = {ok_id}
+    enrollments["alice"] = {ok_id, missing_id}
 
     resp = http.post("/media/resolve", json={"assetIds": [denied_id, ok_id, missing_id]},
                      headers={"X-User": "alice"})
@@ -257,7 +257,7 @@ def test_app_errors_are_not_reported_as_media_library_failures(media) -> None:
     # A can_access bug is the app's own 500, not a 502.
     client = MediaLibraryClient(base_url=BASE_URL, tenant_id=TENANT_ID, token="service-token")
     app = FastAPI()
-    app.include_router(create_media_router(AccessGate(client, lambda user, ids: None), lambda: "u"))
+    app.include_router(create_media_router(client, lambda user, ids: None, lambda: "u"))
 
     resp = TestClient(app, raise_server_exceptions=False).post(
         "/media/resolve", json={"assetIds": [str(uuid4())]}
@@ -290,7 +290,7 @@ def test_can_access_errors_of_media_library_types_stay_500(media, make_error) ->
 
     client = MediaLibraryClient(base_url=BASE_URL, tenant_id=TENANT_ID, token="service-token")
     app = FastAPI()
-    app.include_router(create_media_router(AccessGate(client, can_access), lambda: "u"))
+    app.include_router(create_media_router(client, can_access, lambda: "u"))
     http = TestClient(app, raise_server_exceptions=False)
     asset_id = str(uuid4())
 
@@ -308,7 +308,7 @@ def test_can_access_media_library_error_answers_502(media) -> None:
 
     client = MediaLibraryClient(base_url=BASE_URL, tenant_id=TENANT_ID, token="service-token")
     app = FastAPI()
-    app.include_router(create_media_router(AccessGate(client, can_access), lambda: "u"))
+    app.include_router(create_media_router(client, can_access, lambda: "u"))
     http = TestClient(app, raise_server_exceptions=False)
     asset_id = str(uuid4())
 
@@ -387,3 +387,57 @@ def test_links_are_cached_across_users(media, http, enrollments) -> None:
 
     assert resp.json()["items"][0]["status"] == "ok"
     assert len(media.requests) == 1
+
+
+# ── Story 7.10: every id failing can_access is forbidden ──────────────
+
+
+def test_a_denied_id_is_forbidden_even_when_it_does_not_exist(media, http) -> None:
+    missing_id = str(uuid4())
+    media.missing.add(missing_id)
+
+    resp = http.post("/media/resolve", json={"assetIds": [missing_id]}, headers={"X-User": "mallory"})
+
+    assert resp.json()["items"] == [{
+        "assetId": missing_id, "status": "forbidden", "thumbnailUrl": None, "asset": None,
+        "error": "Access denied",
+    }]
+
+
+def test_a_full_batch_is_one_media_request(media, http, enrollments) -> None:
+    ids = [str(uuid4()) for _ in range(MAX_RESOLVE_IDS)]
+    enrollments["alice"] = set(ids)
+
+    resp = http.post("/media/resolve", json={"assetIds": ids}, headers={"X-User": "alice"})
+
+    assert [i["status"] for i in resp.json()["items"]] == ["ok"] * MAX_RESOLVE_IDS
+    assert [len(r) for r in media.requests] == [MAX_RESOLVE_IDS]
+
+
+def test_without_thumbnails_denied_ids_are_not_sent_to_media(media, enrollments) -> None:
+    allowed_id, denied_id = str(uuid4()), str(uuid4())
+    client = MediaLibraryClient(base_url=BASE_URL, token="service-token")
+    app = FastAPI()
+    app.include_router(create_media_router(
+        client, lambda user, ids: [allowed_id], lambda: "u", thumbnails=False,
+    ))
+
+    body = TestClient(app).post("/media/resolve", json={"assetIds": [denied_id, allowed_id]}).json()
+
+    assert media.requests == [[allowed_id]]
+    assert body["items"][0] == {"assetId": denied_id, "status": "forbidden", "thumbnailUrl": None,
+                                "asset": None, "error": "Access denied"}
+    assert body["items"][1]["status"] == "ok"
+    client.close()
+
+
+def test_importing_pkg_media_does_not_need_fastapi() -> None:
+    import subprocess
+    import sys
+
+    code = (
+        "import sys; import pkg_media, pkg_media.contract; "
+        "assert 'fastapi' not in sys.modules, 'pkg_media imported fastapi'"
+    )
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr

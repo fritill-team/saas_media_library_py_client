@@ -1,6 +1,7 @@
-"""FastAPI routes that serve media links through an ``AccessGate``, issue
-media grants for the app's browser users, and start their direct uploads.
+"""FastAPI routes for a service's browser users: the media resolve router
+(the app's ``can_access``, then links), media grants, and direct uploads.
 
+Every route works with a ``MediaClient`` on either transport (HTTP or gRPC).
 Needs the ``fastapi`` extra: ``pip install "pkg-media[fastapi]"``.
 """
 
@@ -22,8 +23,9 @@ except ImportError as exc:  # pragma: no cover - depends on the environment
 import httpx
 from pydantic import BaseModel, Field
 
+from pkg_media.cache import AssetUrlCache
 from pkg_media.exceptions import MediaLibraryError, NotFoundError, UploadRejected, ValidationError
-from pkg_media.gate import AccessGate
+from pkg_media.gate import AccessGate, CanAccess
 from pkg_media.grants import GrantScope
 from pkg_media.profiles import UploadProfile
 from pkg_media.models import ResolveStatus
@@ -44,34 +46,57 @@ class ResolveRequest(BaseModel):
 
 
 def create_media_router(
-    gate: AccessGate,
+    client: Any,
+    can_access: CanAccess,
     get_current_user: Callable[..., Any],
     *,
+    cache: Optional[AssetUrlCache] = None,
     prefix: str = "/media",
+    thumbnails: bool = True,
 ) -> APIRouter:
-    """Routes that mirror the media library's delivery API for RESTRICTED assets.
+    """The service's media resolve router: browsers read assets through it,
+    with their session on the service, and need no media grant.
 
     - ``POST {prefix}/resolve`` with ``{"assetIds": [...]}`` (1 to 100 ids):
-      the same body as ``POST /delivery/assets/resolve``.
+      ``can_access(user, ids)`` (the app's rule, one call for all ids), then
+      the allowed ids are resolved through ``client`` (``client.delivery``,
+      batches of 100). Answers the shape of media's
+      ``POST /delivery/assets/resolve``: ``{"items": [{"assetId", "status",
+      "thumbnailUrl", "asset", "error"}], "total"}``, one item per id in
+      order. Every id failing ``can_access`` is ``forbidden`` (even one that
+      does not exist), with at most a public ``thumbnailUrl``.
     - ``GET {prefix}/{asset_id}``: the asset, as ``GET /delivery/assets/{id}``.
       403 with ``{"detail", "thumbnailUrl"}`` when denied, 404 when not found,
       502 when the media library could not produce a link.
 
-    ``get_current_user`` is the app's FastAPI dependency; whatever it returns
-    is passed to ``gate``'s ``can_access``. Failures talking to the media
-    library (error responses, connection errors, timeouts, malformed
-    responses) answer 502 with a generic detail, so an expired service token
-    is not mistaken for the user's own 401. The gate raises all of them as
-    ``MediaLibraryError``; other exceptions from ``can_access`` and all
-    exceptions from ``get_current_user`` are not caught here (500, or the
-    app's own handlers). A ``MediaLibraryError`` raised by ``can_access`` is
-    answered 502 like the gate's own. Endpoints are sync and run in
-    FastAPI's threadpool.
+    ``client`` is a sync ``MediaClient`` calling as the app's service (HTTP
+    or gRPC). ``get_current_user`` is the app's FastAPI dependency; whatever
+    it returns is passed to ``can_access``, which returns the allowed ids
+    (or a ``{id: allowed}`` mapping). ``cache`` (an ``AssetUrlCache``)
+    shares links between users. With ``thumbnails=False`` denied ids are not
+    sent to the media library at all (no teaser thumbnail).
+
+    Failures talking to the media library (error statuses, connection
+    errors, timeouts, malformed responses) answer 502 with a generic detail,
+    so an expired service credential is not mistaken for the user's own 401.
+    Other exceptions from ``can_access`` and all exceptions from
+    ``get_current_user`` are not caught (500, or the app's own handlers); a
+    ``MediaLibraryError`` raised by ``can_access`` is answered 502. Endpoints
+    are sync and run in FastAPI's threadpool.
 
     Usage::
 
-        app.include_router(create_media_router(gate, get_current_user))
+        def can_access(user, asset_ids):
+            return db.scalars(select(Lesson.asset_id).where(
+                Lesson.asset_id.in_(asset_ids), Lesson.course_id.in_(user.course_ids)))
+
+        app.include_router(create_media_router(media, can_access, get_current_user,
+                                               cache=AssetUrlCache()))
+
+    The browser (nuxt-module ``backends.<name>.resolve``) posts to
+    ``{backend}{prefix}/resolve``.
     """
+    gate = AccessGate(client, can_access, cache=cache, hide_missing=True, resolve_denied=thumbnails)
     router = APIRouter(prefix=prefix)
 
     @router.post("/resolve", response_model=None)
@@ -135,8 +160,8 @@ def create_grant_router(
     """``POST {prefix}/grants``: the browser asks, the app decides, the media
     library signs.
 
-    ``client`` must be a ``MediaLibraryClient`` with the tenant's **service
-    token**. ``authorize(user, request, profile)`` is the app's own rule (its
+    ``client`` is a sync ``MediaClient`` calling as the app's service (HTTP
+    or gRPC). ``authorize(user, request, profile)`` is the app's own rule (its
     enrollments, ownership, roles…): return ``True`` to issue exactly what
     was asked. It is called for every request; ``profile`` is the
     ``UploadProfile`` named by ``request.profile`` (looked up in
@@ -255,8 +280,8 @@ def create_upload_router(
       the upload session with the profile, saves an ``UploadRecord`` in
       ``store`` and issues an ``upload`` grant for that one session.
       201 ``{"sessionId", "grant", "grantId", "expiresIn", "expiresAt",
-      "tenant", "partSizeBytes"}``, plus ``"uploadBaseUrl"`` only when
-      ``upload_base_url`` is set.
+      "partSizeBytes"}``, plus ``"tenant"`` when the client has a
+      ``tenant_id`` and ``"uploadBaseUrl"`` when ``upload_base_url`` is set.
     - ``POST {prefix}/{session_id}/grant``: a new grant for a session the
       user started and has not attached yet (the browser refreshes before
       ``expiresAt``). 200 with ``{"sessionId", "grant", "grantId",
@@ -273,8 +298,8 @@ def create_upload_router(
       ``{"detail", "reason"}`` when the upload fails the check (not
       finalized, another session's asset, visibility…).
 
-    The browser sends ``Authorization: Bearer <grant>`` and ``X-Tenant:
-    <tenant>`` to ``{upload base}/manage/uploads/sessions/{sessionId}/…``,
+    The browser sends ``Authorization: Bearer <grant>`` to
+    ``{upload base}/manage/uploads/sessions/{sessionId}/…``,
     where the upload base is the frontend's choice (the Nuxt module's
     ``mediaLibrary.serviceUploads``: the public media library, or its
     same-origin pass-through route),
@@ -282,8 +307,8 @@ def create_upload_router(
     ``on_attach``), or ``{sessionId, assetId}`` to an attach endpoint of the
     app's own that calls ``service_uploads.claim_upload``.
 
-    ``client`` must be a ``MediaLibraryClient`` with the tenant's **service
-    token**. ``profiles`` maps the names the browser may send to profiles;
+    ``client`` is a sync ``MediaClient`` calling as the app's service (HTTP
+    or gRPC: bytes never pass through it). ``profiles`` maps the names the browser may send to profiles;
     each profile's ``name`` must be its key (``claim_upload`` compares it).
     ``get_owner(user)`` is the app's user reference, stored in the record
     and sent as the grant's subject. ``upload_base_url`` is optional and
@@ -364,30 +389,39 @@ def create_upload_router(
         if not can_start(user, payload, profile):
             raise HTTPException(status_code=403, detail="Not allowed")
 
+        owner = get_owner(user)
         with _upload_errors():
-            session = client.uploads.create_session(
+            # One call over gRPC (Uploads.OpenSession); over HTTP the session
+            # is aborted when its grant cannot be issued.
+            opened = client.uploads.open_session(
                 mime_type=payload.mime_type,
                 profile=profile,
                 original_filename=payload.filename,
                 expected_size_bytes=payload.size_bytes,
+                subject=owner,
+                grant_ttl_seconds=ttl_seconds,
                 validate=False,
             )
+        session = opened.session
         try:
             store.save(UploadRecord(
                 session_id=session.id,
-                owner=get_owner(user),
+                owner=owner,
                 profile=profile.name,
                 context=dict(payload.context),
             ))
-            body = issue(session.id, user)
         except Exception:
             _abort_quietly(client, session.id)
             raise
         started = {
-            **body,
-            "tenant": client.tenant_id,
+            "sessionId": str(session.id),
+            **opened.grant.to_payload(),
             "partSizeBytes": session.part_size_bytes,
         }
+        tenant_id = getattr(client, "tenant_id", None)
+        if tenant_id is not None:
+            # Older browsers send it as X-Tenant; media ignores it.
+            started["tenant"] = tenant_id
         if base_url:
             started["uploadBaseUrl"] = base_url
         return started
@@ -442,8 +476,8 @@ def create_upload_router(
 
 @contextmanager
 def _upload_errors() -> Iterator[None]:
-    # UploadsAPI and GrantsAPI let httpx's transport errors through (only
-    # AccessGate wraps them); a browser should see 502 for those too.
+    # Over HTTP, UploadsAPI and GrantsAPI let httpx's transport errors through
+    # (only AccessGate wraps them); a browser should see 502 for those too.
     try:
         with _media_library_errors():
             yield
