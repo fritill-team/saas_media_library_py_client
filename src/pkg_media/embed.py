@@ -67,8 +67,9 @@ class EmbeddedMedia(BaseModel):
 
     - ``url``: the asset's file; None when the user may not open it, the
       asset does not exist, or it is not ``ready`` yet.
-    - ``thumbnail_url``: the thumbnail; also set for a denied user (a locked
-      teaser). ``poster`` is the same link for videos.
+    - ``poster``: the image to show for the asset (a video's still, an
+      image's thumbnail rendition); also set for a denied user, as a locked
+      teaser.
     - ``streams``: HLS/DASH links of a video or audio, when it has a stream.
     - ``sources``: the image's sizes, smallest first, for ``srcset``.
     - ``width`` / ``height``: the largest size media has for the asset (its
@@ -86,7 +87,6 @@ class EmbeddedMedia(BaseModel):
     asset_id: UUID = Field(alias="assetId")
     kind: EmbeddedKind = "other"
     url: Optional[str] = None
-    thumbnail_url: Optional[str] = Field(None, alias="thumbnailUrl")
     width: Optional[int] = None
     height: Optional[int] = None
     alt: Optional[str] = None
@@ -118,8 +118,8 @@ class EmbeddedMedia(BaseModel):
 
         An ``ok`` result with its asset gives every link. Any other result
         (``forbidden``, ``not_found``, ``error``) gives at most its
-        ``thumbnail_url``, and only when its expiry is known from
-        ``service_result`` (the media library's result for the service,
+        ``thumbnail_url`` as ``poster``, and only when its expiry is known
+        from ``service_result`` (the media library's result for the service,
         whose asset lists the thumbnail's expiry); it also gives the kind.
         """
         if result.status == ResolveStatus.OK and result.asset is not None:
@@ -137,8 +137,7 @@ class EmbeddedMedia(BaseModel):
         return cls(
             asset_id=result.asset_id,
             kind=kind,
-            thumbnail_url=thumbnail,
-            poster=thumbnail if kind == "video" else None,
+            poster=thumbnail,
             **_expiry_fields(links),
         )
 
@@ -295,10 +294,9 @@ def _from_asset(asset_id: UUID, asset: DeliveryAsset) -> EmbeddedMedia:
         asset_id=asset_id,
         kind=kind,
         url=url,
-        thumbnail_url=thumbnail,
         width=width,
         height=height,
-        poster=thumbnail if kind == "video" else None,
+        poster=thumbnail,
         streams=streams,
         sources=sources,
         **_expiry_fields(links),

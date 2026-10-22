@@ -109,7 +109,6 @@ def test_allowed_video_maps_every_link() -> None:
     assert media.asset_id == asset_id
     assert media.kind == "video"
     assert media.url == DOWNLOAD.format(id=asset_id)
-    assert media.thumbnail_url == THUMB.format(id=asset_id)
     assert media.poster == THUMB.format(id=asset_id)
     assert media.streams.hls == HLS.format(id=asset_id)
     assert media.streams.dash == DASH.format(id=asset_id)
@@ -130,7 +129,7 @@ def test_json_is_camel_case_with_every_field() -> None:
     data = media.to_json()
 
     assert set(data) == {
-        "assetId", "kind", "url", "thumbnailUrl", "width", "height", "alt", "poster",
+        "assetId", "kind", "url", "width", "height", "alt", "poster",
         "streams", "sources", "expiresIn", "public",
     }
     assert data["assetId"] == str(asset_id)
@@ -143,7 +142,8 @@ def test_public_image_is_tokenless_with_sources() -> None:
     media = EmbeddedMedia.from_result(DeliveryBatchResolveResult.model_validate(_ok(asset_id, _image(asset_id))))
 
     assert media.kind == "image"
-    assert media.poster is None and media.streams is None
+    assert media.poster == SIZES[512].format(id=asset_id)
+    assert media.streams is None
     assert [(s.width, s.height, s.url) for s in media.sources] == [
         (256, 192, SIZES[256].format(id=asset_id)),
         (512, 384, SIZES[512].format(id=asset_id)),
@@ -178,7 +178,7 @@ def test_asset_not_ready_has_no_url() -> None:
     media = EmbeddedMedia.from_result(DeliveryBatchResolveResult.model_validate(_ok(asset_id, asset)))
 
     assert media.url is None
-    assert media.thumbnail_url == THUMB.format(id=asset_id)
+    assert media.poster == THUMB.format(id=asset_id)
     assert media.public is True
 
 
@@ -198,7 +198,7 @@ def test_not_found_is_empty() -> None:
     asset_id = uuid4()
     media = EmbeddedMedia.from_result(DeliveryBatchResolveResult(asset_id=asset_id, status="not_found"))
 
-    assert media.url is None and media.thumbnail_url is None
+    assert media.url is None and media.poster is None
     assert media.kind == "other"
     assert media.expires_in is None
     assert media.public is False
@@ -218,7 +218,6 @@ def test_allowed_and_denied(server) -> None:
     teaser = embeds[denied]
     assert teaser.url is None
     assert teaser.streams is None and teaser.sources == []
-    assert teaser.thumbnail_url == THUMB.format(id=denied)
     assert teaser.poster == THUMB.format(id=denied)
     assert teaser.kind == "video"
     assert teaser.width is None and teaser.height is None
@@ -233,7 +232,7 @@ def test_denied_tokened_thumbnail_keeps_its_expiry(server) -> None:
     server.set(denied, _ok(denied, _video(denied, thumb_expires=3600)))
     embeds = MediaEmbedder(server.client(tenant_id=TENANT_ID), _allow()).embed("mallory", [denied])
 
-    assert embeds[denied].thumbnail_url == THUMB_TOKENED.format(id=denied)
+    assert embeds[denied].poster == THUMB_TOKENED.format(id=denied)
     assert embeds[denied].expires_in == 3600
     assert embeds.tokened is True
 
@@ -245,7 +244,7 @@ def test_denied_thumbnail_with_unknown_expiry_is_dropped(server) -> None:
                         "thumbnailUrl": THUMB.format(id=denied), "asset": None, "error": "no"})
     embeds = MediaEmbedder(server.client(tenant_id=TENANT_ID), _allow()).embed("mallory", [denied])
 
-    assert embeds[denied].thumbnail_url is None
+    assert embeds[denied].poster is None
     assert embeds[denied].public is False
 
 
@@ -254,7 +253,7 @@ def test_denied_without_thumbnails_is_not_resolved(server) -> None:
     embeds = MediaEmbedder(server.client(tenant_id=TENANT_ID), _allow(), thumbnails=False).embed("mallory", [denied])
 
     assert server.requests == []
-    assert embeds[denied].url is None and embeds[denied].thumbnail_url is None
+    assert embeds[denied].url is None and embeds[denied].poster is None
 
 
 def test_missing_asset_looks_like_denied(server) -> None:

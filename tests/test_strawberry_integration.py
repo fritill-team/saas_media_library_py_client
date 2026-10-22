@@ -31,7 +31,7 @@ def _schema(media: StrawberryMedia, articles):
 
 
 QUERY = """{ articles { title cover {
-    assetId kind url thumbnailUrl width height alt poster
+    assetId kind url width height alt poster
     streams { hls dash } sources { url width height } expiresIn public
 } } }"""
 
@@ -58,7 +58,7 @@ async def test_cover_field_batches_one_call_per_request(server) -> None:  # noqa
     assert covers[0]["expiresIn"] == 3600
     assert covers[0]["public"] is False
     assert covers[1]["url"] is None
-    assert covers[1]["thumbnailUrl"] == THUMB.format(id=denied)
+    assert covers[1]["poster"] == THUMB.format(id=denied)
     assert covers[2] is None
     assert covers[3] == covers[0]
     # One can_access call and one media library call for the whole request.

@@ -61,7 +61,6 @@ class EmbeddedMediaType:
     asset_id: UUID
     kind: str
     url: Optional[str]
-    thumbnail_url: Optional[str]
     width: Optional[int]
     height: Optional[int]
     alt: Optional[str]
@@ -78,7 +77,6 @@ class EmbeddedMediaType:
             asset_id=media.asset_id,
             kind=media.kind,
             url=media.url,
-            thumbnail_url=media.thumbnail_url,
             width=media.width,
             height=media.height,
             alt=media.alt,

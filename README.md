@@ -1283,7 +1283,7 @@ def list_articles(user, response):
 ```json
 {
   "assetId": "…", "kind": "video",
-  "url": "https://…/o/…?token=…", "thumbnailUrl": "https://…", "poster": "https://…",
+  "url": "https://…/o/…?token=…", "poster": "https://…",
   "width": 1920, "height": 1080, "alt": null,
   "streams": {"hls": "https://…/master.m3u8", "dash": "https://…/manifest.mpd"},
   "sources": [],
@@ -1291,12 +1291,13 @@ def list_articles(user, response):
 }
 ```
 
-- **Denied ids** get `url: null` and at most the asset's thumbnail (a locked
-  teaser; `poster` too for a video), never a download or stream link. Missing
+- **Denied ids** get `url: null` and `streams: null`, and at most a
+  `poster` (the public teaser), never a download or stream link. Missing
   assets look the same. `thumbnails=False` does not send denied ids to the
   media library at all.
 - **`url`** is the asset's file, and is null until the asset is `ready`.
-  **`sources`** are an image's sizes, smallest first, for `srcset`.
+  **`poster`** is the image to show for the asset: a video's still, an
+  image's thumbnail rendition. **`sources`** are an image's sizes, smallest first, for `srcset`.
   **`width` / `height`** are the largest size media has (for the aspect
   ratio). **`alt`** is never set by media: fill it from your data
   (`media.model_copy(update={"alt": article.title})`).
@@ -2109,7 +2110,6 @@ From `pkg_media.embed`, exported from the package root. See
 | `asset_id` | `assetId` | `UUID` | required |
 | `kind` | `kind` | `"image" \| "video" \| "audio" \| "document" \| "other"` | `"other"` |
 | `url` | `url` | `str` | `None` |
-| `thumbnail_url` | `thumbnailUrl` | `str` | `None` |
 | `width` | `width` | `int` | `None` |
 | `height` | `height` | `int` | `None` |
 | `alt` | `alt` | `str` | `None` |
