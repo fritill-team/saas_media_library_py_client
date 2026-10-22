@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Mapping
-from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Union
+from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple, Union
 from uuid import UUID
 
 import httpx
@@ -114,9 +114,21 @@ class AccessGate:
         ``user`` is passed to ``can_access`` untouched. An empty input returns
         ``[]`` without calling ``can_access`` or the media library.
         """
+        return self._resolve_detailed(user, asset_ids)[0]
+
+    def _resolve_detailed(
+        self,
+        user: Any,
+        asset_ids: Iterable[UUID | str],
+    ) -> Tuple[List[DeliveryBatchResolveResult], Dict[UUID, DeliveryBatchResolveResult]]:
+        """``resolve``, plus the service's own result per resolved id.
+
+        For ``MediaEmbedder``, which needs the expiry of a denied id's
+        thumbnail; the service results must never reach a denied user.
+        """
         ids = [_as_uuid(a) for a in asset_ids]
         if not ids:
-            return []
+            return [], {}
         unique = list(dict.fromkeys(ids))
 
         allowed = self._allowed_ids(user, unique)
@@ -145,7 +157,7 @@ class AccessGate:
                 by_id[asset_id] = _forbidden(asset_id, item.thumbnail_url, item.error)
             else:
                 by_id[asset_id] = item
-        return [by_id[asset_id] for asset_id in ids]
+        return [by_id[asset_id] for asset_id in ids], resolved
 
     def resolve_one(self, user: Any, asset_id: UUID | str) -> DeliveryBatchResolveResult:
         """``resolve`` for a single id."""

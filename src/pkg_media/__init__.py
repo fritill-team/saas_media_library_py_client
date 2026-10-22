@@ -5,6 +5,13 @@ from pkg_media.assets import BulkVisibilityResult
 from pkg_media.cache import AssetUrlCache
 from pkg_media.delivery import DeliveryAPI, thumbnail_url
 from pkg_media.gate import AccessGate
+from pkg_media.embed import (
+    EmbeddedMedia,
+    EmbeddedMediaSource,
+    EmbeddedMediaStreams,
+    EmbedResult,
+    MediaEmbedder,
+)
 from pkg_media.grants import GrantScope, GrantsAPI, MediaGrant, grant_profile_payload
 from pkg_media.migration import (
     find_profile,
@@ -84,6 +91,11 @@ __all__ = [
     "AssetAccessAPI",
     "BulkVisibilityResult",
     "AccessGate",
+    "EmbeddedMedia",
+    "EmbeddedMediaSource",
+    "EmbeddedMediaStreams",
+    "EmbedResult",
+    "MediaEmbedder",
     "GrantScope",
     "GrantsAPI",
     "MediaGrant",

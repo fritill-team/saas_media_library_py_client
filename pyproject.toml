@@ -46,6 +46,9 @@ grpc = [
 ]
 # The resolve, grant and upload routers (pkg_media.integrations.fastapi).
 fastapi = ["fastapi>=0.100"]
+# The EmbeddedMedia GraphQL type and per-request dataloader
+# (pkg_media.integrations.strawberry).
+strawberry = ["strawberry-graphql>=0.220"]
 
 [dependency-groups]
 # `build` is needed by tests/test_packaging.py (it builds a real wheel);
@@ -63,6 +66,7 @@ dev = [
     "grpcio>=1.84.0",
     "grpcio-status>=1.84.0",
     "googleapis-common-protos>=1.75.5",
+    "strawberry-graphql>=0.220",
 ]
 # Separate from `dev` on purpose: nothing installs the compiler by accident.
 # `uv sync --all-groups` takes it (CI, and anyone running tools/generate.py).

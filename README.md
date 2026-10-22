@@ -62,6 +62,7 @@ The extras:
 | (none) | `httpx` (≥ 0.25, < 1.0), `pydantic` 2 | the HTTP client, `AccessGate`, `AssetUrlCache`, upload helpers |
 | `grpc` | `grpcio`, `grpcio-status` (≥ 1.84), `protobuf` (≥ 7.35.1, < 8), `googleapis-common-protos` | `transport="grpc"`, `pkg_media.contract`, `pkg_media.reasons` (the media server installs it) |
 | `fastapi` | `fastapi` (≥ 0.100) | `pkg_media.integrations.fastapi` (the resolve and upload routers) |
+| `strawberry` | `strawberry-graphql` (≥ 0.220) | `pkg_media.integrations.strawberry` (the `EmbeddedMedia` GraphQL type and dataloader) |
 
 Without the `grpc` extra, `transport="grpc"` raises an `ImportError` naming
 it. No code generator is installed: the gRPC stubs ship generated.
@@ -1229,9 +1230,12 @@ have, and embed the links in its response:
 1. **Store asset ids only** in your data (for example
    `Lesson.video_asset_id`), never links: links expire.
 2. **Decide access in your endpoint**, as you do for the rest of the page.
-3. **Embed links** from `client.delivery.resolve(ids, cache=...)` for the
-   assets the user may open. For the others, embed only
-   `thumbnail_url(result)` as a locked teaser, never the result itself.
+3. **Embed links** for the assets the user may open, with
+   [`MediaEmbedder`](#embed-media-with-mediaembedder) (the shared
+   `EmbeddedMedia` shape). For the others, embed only the thumbnail as a
+   locked teaser, never the delivery result itself.
+
+Doing it by hand, with `client.delivery.resolve(ids, cache=...)`:
 
 ```python
 def course_page(user, course):
@@ -1249,6 +1253,93 @@ def course_page(user, course):
 
 page = course_page(user, course)
 ```
+
+### Embed media with `MediaEmbedder`
+
+`MediaEmbedder` runs your `can_access` through an `AccessGate` (with an
+`AssetUrlCache`) and returns one `EmbeddedMedia` per id: the same small shape
+in every service, mirrored by the nuxt module's `EmbeddedMedia` type and
+rendered by its `<MLImage :media>` / `<MLVideo :media>`. Put it next to each
+media id you already return (`coverId` → `cover`).
+
+```python
+from pkg_media import MediaEmbedder
+
+embedder = MediaEmbedder(media_client, can_access)  # one per process: it holds the cache
+
+def list_articles(user, response):
+    articles = repo.list()
+    embeds = embedder.embed(user, [a.cover_id for a in articles])  # None ids are skipped
+    if embeds.tokened:
+        response.headers["Cache-Control"] = "private"
+    return [
+        {**a.to_json(), "cover": embeds[a.cover_id].to_json() if a.cover_id else None}
+        for a in articles
+    ]
+```
+
+```json
+{
+  "assetId": "…", "kind": "video",
+  "url": "https://…/o/…?token=…", "thumbnailUrl": "https://…", "poster": "https://…",
+  "width": 1920, "height": 1080, "alt": null,
+  "streams": {"hls": "https://…/master.m3u8", "dash": "https://…/manifest.mpd"},
+  "sources": [],
+  "expiresIn": 3600, "public": false
+}
+```
+
+- **Denied ids** get `url: null` and at most the asset's thumbnail (a locked
+  teaser; `poster` too for a video), never a download or stream link. Missing
+  assets look the same. `thumbnails=False` does not send denied ids to the
+  media library at all.
+- **`url`** is the asset's file, and is null until the asset is `ready`.
+  **`sources`** are an image's sizes, smallest first, for `srcset`.
+  **`width` / `height`** are the largest size media has (for the aspect
+  ratio). **`alt`** is never set by media: fill it from your data
+  (`media.model_copy(update={"alt": article.title})`).
+- **`expiresIn`** is the smallest `*_expires_in` of the links it carries
+  (`null`: none expires). Served from the cache, it is the time really left.
+  A link whose expiry media did not report is left out.
+- **`public: true`** means the item carries links and all of them are
+  tokenless (PUBLIC assets): safe in edge caches and SEO HTML. Read it, not
+  the asset's visibility.
+- **`embeds.tokened`** (or `embeds.cache_control`, `"private"` or `None`):
+  some link carries a token. Tokened links are bearer secrets until they
+  expire (gate links 3600 s, stream links 14400 s): send
+  `Cache-Control: private`, and keep them out of logs and shared caches.
+  Edge-cache only responses whose media are all tokenless.
+
+`embed` is sync (call it from a threadpool endpoint); `aembed` is the same
+from async code. Batches of 100 ids and the transport (gRPC or HTTP) are
+`client.delivery.resolve`'s. `cache=` shares an `AssetUrlCache`
+(`cache=False`: none). `EmbeddedMedia.from_result(result)` maps a single
+delivery result yourself.
+
+#### GraphQL (strawberry)
+
+With the `strawberry` extra, `StrawberryMedia` adds a per-request dataloader:
+every `cover` of one query is one `can_access` call and one media call.
+
+```python
+from pkg_media.integrations.strawberry import EmbeddedMediaType, StrawberryMedia
+
+media = StrawberryMedia(embedder, get_user=lambda info: info.context["auth_context"])
+
+@strawberry.type
+class Article:
+    cover_id: strawberry.Private[Optional[UUID]]
+
+    @strawberry.field
+    async def cover(self, info: strawberry.Info) -> Optional[EmbeddedMediaType]:
+        return await media.load(info, self.cover_id)
+```
+
+The GraphQL type is `EmbeddedMedia` (with `EmbeddedMediaStreams` and
+`EmbeddedMediaSource`), with the same camelCase fields as the JSON above.
+`media.tokened(info)` says whether the request loaded a tokened link. The
+loader is kept in `info.context` (a dict or an object), never across
+requests.
 
 ### `AccessGate`: your rules over `/delivery`
 
@@ -2029,6 +2120,39 @@ All enums are `str` enums: they compare equal to their values.
 | `page` | `page` | `int` | required |
 | `page_size` | `pageSize` | `int` | required |
 
+### Embedded media models
+
+From `pkg_media.embed`, exported from the package root. See
+[Embed media with `MediaEmbedder`](#embed-media-with-mediaembedder).
+
+#### `EmbeddedMedia`
+
+| Field | JSON key | Type | Default |
+|---|---|---|---|
+| `asset_id` | `assetId` | `UUID` | required |
+| `kind` | `kind` | `"image" \| "video" \| "audio" \| "document" \| "other"` | `"other"` |
+| `url` | `url` | `str` | `None` |
+| `thumbnail_url` | `thumbnailUrl` | `str` | `None` |
+| `width` | `width` | `int` | `None` |
+| `height` | `height` | `int` | `None` |
+| `alt` | `alt` | `str` | `None` |
+| `poster` | `poster` | `str` | `None` |
+| `streams` | `streams` | `EmbeddedMediaStreams` | `None` |
+| `sources` | `sources` | `List[EmbeddedMediaSource]` | `[]` |
+| `expires_in` | `expiresIn` | `int` | `None` |
+| `public` | `public` | `bool` | `False` |
+
+Every key is always in the JSON (`to_json()`), null when unset. Other asset
+kinds (`web_app`, `archive`, `font`, `model_3d`, `image_batch`) are `other`.
+`tokened` (property): `expires_in is not None`.
+
+#### `EmbeddedMediaStreams`, `EmbeddedMediaSource`
+
+| Model | Fields |
+|---|---|
+| `EmbeddedMediaStreams` | `hls: str = None`, `dash: str = None` |
+| `EmbeddedMediaSource` | `url: str`, `width: int`, `height: int = None` |
+
 ### Upload models
 
 #### `UploadSession`
@@ -2265,6 +2389,25 @@ are not sent to the media library (no thumbnail; implies `hide_missing`).
 | `resolve_one(user, asset_id)` | as `resolve` | `DeliveryBatchResolveResult` | as `resolve` | `resolve` for one id |
 | `to_payload(results)` (static) | — | `dict` | — | `{"items": [...], "total": n}` in the server's JSON |
 
+### `MediaEmbedder`
+
+```
+MediaEmbedder(client, can_access, *, cache=None, thumbnails=True)
+```
+
+`cache=None` creates the embedder's own `AssetUrlCache`; pass one to share
+it, `False` for none. `gate` (the `AccessGate`, `hide_missing=True`) and
+`cache` are attributes.
+
+| Method | Returns | Raises | Does |
+|---|---|---|---|
+| `embed(user, asset_ids)` | `EmbedResult` | as `AccessGate.resolve` | Your check, then `EmbeddedMedia` per distinct id (None ids skipped) |
+| `aembed(user, asset_ids)` | `EmbedResult` (awaitable) | as `embed` | `embed` in a worker thread |
+
+`EmbedResult` is a read-only mapping `{UUID: EmbeddedMedia}` (keys may be
+given as strings; `get(None)` is `None`), with `media` (the dict),
+`tokened` and `cache_control` (`"private"` when tokened, else `None`).
+
 ### `AssetUrlCache`
 
 ```
@@ -2328,6 +2471,16 @@ Needs the `fastapi` extra.
 | `StartUploadRequest` | — | The upload router's start body |
 | `ResolveRequest` | — | The media router's resolve body: `asset_ids` (`assetIds`), 1 to 100 UUIDs |
 | `MAX_RESOLVE_IDS` | `100` | Ids per resolve request |
+
+### `pkg_media.integrations.strawberry`
+
+Needs the `strawberry` extra.
+
+| Name | Does |
+|---|---|
+| `StrawberryMedia(embedder, get_user)` | `load(info, asset_id)` → `EmbeddedMediaType` or `None`; `load_many(info, ids)`; `loader(info)` (the request's `DataLoader`); `tokened(info)` |
+| `EmbeddedMediaType` | GraphQL type `EmbeddedMedia`; `from_model(media)` |
+| `EmbeddedMediaStreamsType`, `EmbeddedMediaSourceType` | GraphQL types `EmbeddedMediaStreams`, `EmbeddedMediaSource` |
 
 ### `pkg_media.service_uploads`
 
