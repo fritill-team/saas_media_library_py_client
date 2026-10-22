@@ -135,8 +135,11 @@ class EmbeddedMedia(BaseModel):
                 thumbnail = result.thumbnail_url
                 links.append((thumbnail, expires_in))
         # The teaser's sizes: the same still, from the service's own view.
-        sources = _poster_sources(_thumbnail_rendition(known), links) if thumbnail else []
         kind = _kind(known) if known is not None else "other"
+        sources = (
+            _poster_sources(_thumbnail_rendition(known), links, _still_shape(known, kind))
+            if thumbnail else []
+        )
         return cls(
             asset_id=result.asset_id,
             kind=kind,
@@ -284,7 +287,7 @@ def _from_asset(asset_id: UUID, asset: DeliveryAsset) -> EmbeddedMedia:
         streams = EmbeddedMediaStreams(hls=asset.hls_url, dash=asset.dash_url)
         links.extend((u, asset.stream_url_expires_in) for u in (asset.hls_url, asset.dash_url) if u)
 
-    sources = _poster_sources(thumb, links) if kind in ("image", "video") else []
+    sources = _poster_sources(thumb, links, _still_shape(asset, kind)) if kind in ("image", "video") else []
 
     width, height = _dimensions(asset, kind)
     return EmbeddedMedia(
@@ -300,15 +303,39 @@ def _from_asset(asset_id: UUID, asset: DeliveryAsset) -> EmbeddedMedia:
     )
 
 
+# How far a still's width/height ratio may stray from the video's and still count.
+_SHAPE_TOLERANCE = 0.02
+
+
+def _still_shape(asset: DeliveryAsset, kind: str) -> Optional[float]:
+    """The ratio a video's stills must have to be listed; None for an image.
+
+    Media scales each still to a fixed size, so the 4:3 ones of a 16:9 video
+    are squashed. Only the stills with the video's own shape are listed; a
+    video of unknown size lists none (``poster`` still carries its still).
+    """
+    if kind != "video":
+        return None
+    width, height = _dimensions(asset, kind)
+    return width / height if width and height else 0.0
+
+
 def _poster_sources(
-    thumb: Optional[DeliveryRendition], links: List[Tuple[str, Optional[int]]]
+    thumb: Optional[DeliveryRendition],
+    links: List[Tuple[str, Optional[int]]],
+    shape: Optional[float] = None,
 ) -> List[EmbeddedMediaSource]:
     """The thumbnail rendition's sizes, smallest first, one per width (the
-    first listed wins); each link joins ``links`` for the expiry."""
+    first listed wins), limited to ``shape`` when given (see ``_still_shape``);
+    each link joins ``links`` for the expiry."""
     if thumb is None:
         return []
     by_width: Dict[int, EmbeddedMediaSource] = {}
     for v in thumb.variants:
+        if shape is not None and not (
+            shape and v.width and v.height and abs(v.width / v.height / shape - 1) <= _SHAPE_TOLERANCE
+        ):
+            continue
         if v.preview_url and v.width and v.width not in by_width:
             by_width[v.width] = EmbeddedMediaSource(url=v.preview_url, width=v.width, height=v.height)
             links.append((v.preview_url, v.preview_url_expires_in))

@@ -23,7 +23,11 @@ DASH = "https://stream.test/s/stoken/{id}/manifest.mpd"
 THUMB = "https://media.test/o/{id}/thumb-1024.webp"
 THUMB_TOKENED = "https://media.test/o/{id}/thumb-1024.webp?token=thumb"
 SIZES = {256: "https://media.test/o/{id}/256.webp", 512: "https://media.test/o/{id}/512.webp"}
-STILLS = {120: "https://media.test/o/{id}/default.webp", 1280: "https://media.test/o/{id}/maxres.webp"}
+STILLS = {
+    120: "https://media.test/o/{id}/default.webp",
+    320: "https://media.test/o/{id}/medium.webp",
+    1280: "https://media.test/o/{id}/maxres.webp",
+}
 # Links no denied user may see.
 SECRETS = (DOWNLOAD, HLS, DASH, "https://media.test/o/{id}/720p.m3u8")
 
@@ -47,8 +51,11 @@ def _video(asset_id, *, thumb_expires: Optional[int] = None, status: str = "read
              "variants": [
                  {"name": "maxres", "width": 1280, "height": 720,
                   "previewUrl": STILLS[1280].format(id=asset_id), "previewUrlExpiresIn": thumb_expires},
+                 # 4:3, squashed from the 16:9 frame: not listed.
                  {"name": "default", "width": 120, "height": 90,
                   "previewUrl": STILLS[120].format(id=asset_id), "previewUrlExpiresIn": thumb_expires},
+                 {"name": "medium", "width": 320, "height": 180,
+                  "previewUrl": STILLS[320].format(id=asset_id), "previewUrlExpiresIn": thumb_expires},
              ],
              "previewUrl": thumb.format(id=asset_id), "previewUrlType": "gate",
              "previewUrlExpiresIn": thumb_expires},
@@ -120,9 +127,9 @@ def test_allowed_video_maps_every_link() -> None:
     assert media.streams.dash == DASH.format(id=asset_id)
     # Largest variant outside the (fixed-size) thumbnails.
     assert (media.width, media.height) == (1920, 1080)
-    # The still's sizes, smallest first.
+    # The still's sizes with the video's shape, smallest first.
     assert [(s.width, s.height, s.url) for s in media.sources] == [
-        (120, 90, STILLS[120].format(id=asset_id)),
+        (320, 180, STILLS[320].format(id=asset_id)),
         (1280, 720, STILLS[1280].format(id=asset_id)),
     ]
     assert media.alt is None
@@ -130,6 +137,16 @@ def test_allowed_video_maps_every_link() -> None:
     assert media.expires_in == 3600
     assert media.tokened is True
     assert media.public is False
+
+
+def test_video_of_unknown_size_lists_no_stills() -> None:
+    asset_id = uuid4()
+    asset = _video(asset_id)
+    asset["renditions"] = [r for r in asset["renditions"] if r["renditionType"] == "thumbnail"]
+    media = EmbeddedMedia.from_result(DeliveryBatchResolveResult.model_validate(_ok(asset_id, asset)))
+
+    assert media.poster == THUMB.format(id=asset_id)
+    assert media.sources == []
 
 
 def test_json_is_camel_case_with_every_field() -> None:
@@ -229,7 +246,7 @@ def test_allowed_and_denied(server) -> None:
     assert teaser.url is None
     assert teaser.streams is None
     # A locked video still shows its still at every size.
-    assert [s.width for s in teaser.sources] == [120, 1280]
+    assert [s.width for s in teaser.sources] == [320, 1280]
     assert teaser.poster == THUMB.format(id=denied)
     assert teaser.kind == "video"
     assert teaser.width is None and teaser.height is None

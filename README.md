@@ -1271,7 +1271,7 @@ def list_articles(user, response):
   "width": 1920, "height": 1080, "alt": null,
   "streams": {"hls": "https://…/master.m3u8", "dash": "https://…/manifest.mpd"},
   "sources": [
-    {"url": "https://…/default.webp", "width": 120, "height": 90},
+    {"url": "https://…/medium.webp", "width": 320, "height": 180},
     {"url": "https://…/maxres.webp", "width": 1280, "height": 720}
   ],
   "expiresIn": 3600, "public": false
@@ -1286,7 +1286,8 @@ def list_articles(user, response):
   **`poster`** is the image to show for the asset: a video's still, an
   image's thumbnail rendition. **`sources`** are the poster's sizes (an image's thumbnails, a video's
   stills), smallest first, for `srcset`: `poster` stays the one URL for places that take one
-  (`<video poster>`, `og:image`).
+  (`<video poster>`, `og:image`). A video lists only the stills with its own shape: media
+  scales each still to a fixed size, so a 16:9 video's 4:3 stills are squashed and left out.
   **`width` / `height`** are the largest size media has (for the aspect
   ratio). **`alt`** is never set by media: fill it from your data
   (`media.model_copy(update={"alt": article.title})`).
