@@ -4,8 +4,9 @@ A service that returns records with media ids (``coverId``…) adds the media
 next to them (``cover: {url, …}``), so the browser renders it without asking
 anyone else. The service decides access with its own rule; ``MediaEmbedder``
 runs that rule through ``AccessGate`` and turns the media library's delivery
-results into one small shape, the same in every service (and mirrored by the
-nuxt module's ``EmbeddedMedia`` TS type).
+results into one small shape, the same in every service. This model (and its
+GraphQL type in ``pkg_media.integrations.strawberry``) is the only definition:
+frontends take the type from each service's GraphQL schema by codegen.
 
 Tokened links (gate ``/o/…?token``, stream tokens) are bearer secrets until
 they expire: keep them out of logs and of any cache shared between users.

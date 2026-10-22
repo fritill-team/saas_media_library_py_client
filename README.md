@@ -1258,9 +1258,9 @@ page = course_page(user, course)
 
 `MediaEmbedder` runs your `can_access` through an `AccessGate` (with an
 `AssetUrlCache`) and returns one `EmbeddedMedia` per id: the same small shape
-in every service, mirrored by the nuxt module's `EmbeddedMedia` type and
-rendered by its `<MLImage :media>` / `<MLVideo :media>`. Put it next to each
-media id you already return (`coverId` → `cover`).
+in every service. It is the only definition of that shape: frontends take
+the type from your GraphQL schema by codegen. Put it next to each media id
+you already return (`coverId` → `cover`).
 
 ```python
 from pkg_media import MediaEmbedder
