@@ -173,7 +173,7 @@ def create_grant_router(
     "expiresAt"}``; 403 when ``authorize`` refuses; 422 for an unknown
     profile name, ``manage:*`` (never issued to browsers here), or a request
     the media library rejects; 502 when the media library cannot be reached
-    or refuses the service token.
+    or refuses the service credentials.
 
     Usage::
 
@@ -328,7 +328,7 @@ def create_upload_router(
     Other responses: 403 when ``can_start`` refuses; 413 / 415 / 422 when
     the profile rejects the file (``{"detail", "reason"}``, ``reason`` as
     ``UploadRejected``); 422 for an unknown or missing profile name; 502
-    when the media library cannot be reached or refuses the service token.
+    when the media library cannot be reached or refuses the service credentials.
 
     Usage::
 

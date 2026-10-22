@@ -1,4 +1,4 @@
-"""Per-asset cache of delivery links resolved with a service token.
+"""Per-asset cache of delivery links resolved as a service.
 
 Delivery links are bound to the file, not to the user who asked for it
 (docs/asset-access/retirement.md), so one cached entry serves every user the
@@ -7,8 +7,8 @@ kept per tenant.
 
 Entries are not kept per principal, and a hit makes no request, so the media
 library never checks who reads it. Fill and read a cache only through clients
-using a tenant's service token; a user-token client reading it would get the
-service token's results, RESTRICTED links included.
+calling as a service; any other client reading it would get the service's
+results, RESTRICTED links included.
 """
 
 from __future__ import annotations
@@ -58,7 +58,7 @@ class AssetUrlCache:
     ids per tenant. ``AccessGate`` and ``client.delivery.resolve(ids,
     cache=...)`` pass their client's tenant, so one cache can be shared by
     clients of several tenants, as long as every one of them uses its
-    tenant's service token (entries are not kept per principal). Calls
+    service credentials (entries are not kept per principal). Calls
     without ``tenant_id`` use a namespace of
     their own, except ``invalidate``, which then drops the asset for every
     tenant.

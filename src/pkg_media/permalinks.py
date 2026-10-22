@@ -3,7 +3,7 @@
 A permalink is a media-library record ``name -> assetId`` for a **public**
 asset. The app picks the name (e.g. ``users/42/avatar``), stores the name,
 not the URL, and re-points it whenever the asset changes; every page that
-embedded the address follows. Service token only. See the server's
+embedded the address follows. Services only. See the server's
 docs/api/permalinks.md.
 """
 
@@ -93,7 +93,7 @@ class PermalinksAPI:
             ValueError: invalid name (checked before the request).
             NotFoundError: the asset is missing or deleted (404).
             ValidationError: the asset is not public (422).
-            AuthenticationError: not a service token (401/403).
+            AuthenticationError: not a service (401/403).
         """
         return await self._transport.set_permalink(validate_permalink_name(name), str(asset_id))
 

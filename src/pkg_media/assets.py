@@ -73,11 +73,9 @@ class AssetsAPI:
         tenant's R2 bucket). Leaving PUBLIC purges the asset's edge-cached
         copies.
 
-        Once the server turns on ``RESTRICTED_ASSETS_SERVICE_ONLY`` or
-        ``MANAGE_RESTRICTED_PREVIEWS_PRIVILEGED_ONLY``, only a privileged
-        caller (a service token, or a trusted user with a privileged role)
-        may move a RESTRICTED asset to another visibility; anyone else gets
-        403 (``AuthenticationError``).
+        Only a service, or a grant listing the asset, may move a RESTRICTED
+        asset to another visibility; anyone else gets 403
+        (``AuthenticationError``).
         """
         return await self._transport.update_asset_visibility(str(asset_id), str(visibility))
 
@@ -118,7 +116,7 @@ class AssetsAPI:
 
         ``limit`` is 1 to 200 (the server answers 422 beyond);
         ``next_offset`` is None on the last page. Needs the ``update`` scope
-        on the asset (service token, trusted admin, or a grant listing it).
+        on the asset (a service, or a grant listing it).
 
         Raises:
             NotFoundError: ``reason`` is ``asset_not_found`` (unknown or

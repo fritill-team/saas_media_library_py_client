@@ -153,7 +153,7 @@ class AccessGate:
             elif item.status == ResolveStatus.FORBIDDEN:
                 logger.warning(
                     "Media library denied asset %s to the gate's client; "
-                    "AccessGate needs a client calling as the app's service (client credentials or a service token)",
+                    "AccessGate needs a client calling as the app's service (Keycloak client credentials)",
                     asset_id,
                 )
                 by_id[asset_id] = _forbidden(asset_id, item.thumbnail_url, item.error)

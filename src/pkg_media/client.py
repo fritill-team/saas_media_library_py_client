@@ -7,11 +7,9 @@ import httpx
 from pkg_media._http import raise_for_status
 from pkg_media._sync import LoopThread, SyncAPI
 from pkg_media._transport.http_transport import BearerAuth, HttpTransport
-from pkg_media.asset_access import AssetAccessAPI
 from pkg_media.assets import AssetsAPI
 from pkg_media.credentials import ClientCredentials
 from pkg_media.delivery import DeliveryAPI
-from pkg_media.exceptions import MediaLibraryError
 from pkg_media.grants import GrantsAPI
 from pkg_media.permalinks import PermalinksAPI
 from pkg_media.processing_options import ProcessingOptionsAPI
@@ -40,7 +38,7 @@ class AsyncMediaClient:
             client_secret=os.environ["MEDIA_CLIENT_SECRET"],
         )
 
-        # HTTP, with the same credentials (or a media service token)
+        # HTTP, with the same credentials
         client = AsyncMediaClient(transport="http", base_url="https://media.example.com",
                                   token_url=..., client_id=..., client_secret=...)
 
@@ -53,7 +51,7 @@ class AsyncMediaClient:
     Credentials: ``token_url`` + ``client_id`` + ``client_secret`` (or a
     ``ClientCredentials``) fetch and cache a client-credentials token,
     refreshed before it expires; ``token`` is a fixed bearer token instead
-    (e.g. a media service token over HTTP). Sent as ``authorization`` (gRPC
+    (e.g. one fetched elsewhere, or in tests). Sent as ``authorization`` (gRPC
     metadata) or ``Authorization`` (HTTP header). No ``X-Tenant`` is sent.
 
     gRPC: mutating calls carry an ``idempotency-key``; UNAVAILABLE is retried
@@ -186,8 +184,6 @@ class MediaClient:
     Close it (or use it as a context manager) to stop that thread. In async
     code, use ``AsyncMediaClient`` instead.
 
-    ``client.access`` (deprecated) is HTTP-only and warns on every call;
-    use ``AccessGate`` instead.
     """
 
     def __init__(self, transport: Transport = "http", **kwargs: Any):
@@ -197,8 +193,6 @@ class MediaClient:
         except BaseException:
             self._runner.stop()
             raise
-        self._timeout = kwargs.get("timeout", 30.0)
-        self._legacy_http: Optional[httpx.Client] = None
         self.assets: Any = SyncAPI(self.aio.assets, self._runner)
         self.delivery: Any = SyncAPI(self.aio.delivery, self._runner)
         self.uploads: Any = SyncAPI(self.aio.uploads, self._runner)
@@ -215,16 +209,9 @@ class MediaClient:
         """Scopes ``AssetUrlCache`` entries; never sent to the server."""
         return self.aio.tenant_id
 
-    @property
-    def access(self) -> AssetAccessAPI:
-        """Deprecated per-user access grants (HTTP only)."""
-        return AssetAccessAPI(self._deprecated_http("access"))
-
     def set_token(self, token: str) -> None:
         """Replace the fixed bearer token (e.g. after a rotation)."""
         self.aio.set_token(token)
-        if self._legacy_http is not None:
-            self._legacy_http.headers["Authorization"] = f"Bearer {token}"
 
     def close(self) -> None:
         if self._runner.loop.is_closed():
@@ -233,30 +220,12 @@ class MediaClient:
             self._runner.run(self.aio.aclose())
         finally:
             self._runner.stop()
-            if self._legacy_http is not None:
-                self._legacy_http.close()
 
     def __enter__(self) -> MediaClient:
         return self
 
     def __exit__(self, *args: Any) -> None:
         self.close()
-
-    def _deprecated_http(self, api: str) -> httpx.Client:
-        if self.aio.transport != "http":
-            raise MediaLibraryError(f"client.{api} is deprecated and HTTP-only: use a client with transport='http'")
-        if self._legacy_http is None:
-            headers = {}
-            auth = None
-            if self.aio.credentials is not None:
-                credentials = self.aio.credentials
-                auth = BearerAuth(credentials.token, sync_token=lambda: self._runner.run(credentials.token()))
-            elif self.aio._token is not None:
-                headers["Authorization"] = f"Bearer {self.aio._token}"
-            self._legacy_http = httpx.Client(
-                base_url=self.aio.base_url or "", headers=headers, auth=auth, timeout=self._timeout
-            )
-        return self._legacy_http
 
 
 class MediaLibraryClient(MediaClient):

@@ -1,7 +1,7 @@
 """Media grants: short-lived, scoped tokens for the app's browser users.
 
 The app decides what one of its users may do (its own rules), then asks the
-media library for a grant with its **service token** and hands the grant to
+media library for a grant with its **service credentials** and hands the grant to
 the browser. The browser calls the media library's ``/manage`` endpoints with
 ``Authorization: Bearer mlg_…``; the media library enforces the grant. The
 app never re-implements those endpoints. See the server's
@@ -22,7 +22,7 @@ from pkg_media.profiles import ANY_MIME_TYPE, UploadProfile, processing_config_p
 
 class GrantScope(str, Enum):
     """What a grant allows. ``MANAGE_ALL`` is every ``/manage`` endpoint of
-    the tenant (like a service token, except issuing grants)."""
+    the tenant (like a service, except issuing grants)."""
 
     UPLOAD = "upload"
     READ = "read"
@@ -140,7 +140,7 @@ class GrantsAPI:
 
         Raises:
             ValidationError: the server rejected the request (422).
-            AuthenticationError: not a service token (401/403).
+            AuthenticationError: not a service (401/403).
             ServerError: e.g. 503 when the server has no ``GRANT_SIGNING_SECRET``.
         """
         payload: Dict[str, Any] = {"scopes": [str(s) for s in scopes]}

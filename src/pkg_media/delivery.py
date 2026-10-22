@@ -89,9 +89,9 @@ class DeliveryAPI:
 
         Cache entries are keyed by tenant and asset id, not by principal, and
         a hit is served without a request. Only pass ``cache`` on a client
-        created with the tenant's **service token**, and never share that
-        cache with user-token clients (or keep it across ``set_token`` to a
-        different principal): they would get the service token's results,
+        calling as your **service**, and never share that cache with other
+        clients (or keep it across ``set_token`` to a different principal):
+        they would get the service's results,
         RESTRICTED links included, where the server answers ``forbidden``.
 
         ``grants``: read grants (``mlg_…``, at most ``MAX_GRANTS``), e.g. one

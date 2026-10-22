@@ -384,11 +384,6 @@ def test_verify_upload_works_over_grpc(client, fake) -> None:
     assert str(asset.id) == asset_id
 
 
-def test_deprecated_access_api_is_http_only(client) -> None:
-    with pytest.raises(MediaLibraryError, match="HTTP-only"):
-        client.access.list(uuid4())
-
-
 # ── Clients ────────────────────────────────────────────────────────────
 
 

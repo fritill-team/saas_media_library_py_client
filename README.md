@@ -104,7 +104,7 @@ cannot), e.g. `secrets: gh_token=${{ secrets.MEDIA_CLIENT_READ_TOKEN }}` in
 ## Concepts
 
 ```
-                 service token (ml_live_…)
+           Keycloak client credentials
 Your backend ─────────────────────────────▶ Media library  ── /v1/manage/…   (uploads, assets, grants)
      │  ▲                                        ▲     │    ── gRPC Delivery  (links)
      │  │ your API                               │     │
@@ -135,33 +135,26 @@ service's own responses (or read through your
 
 ### Who is calling
 
-The media library recognises three kinds of caller.
+The media library accepts two kinds of caller; any other credential is 401.
 
 | Caller | Looks like | Where it lives | What it may do |
 |---|---|---|---|
-| **Service token** | `ml_live_…` / `ml_test_…` | Your backend only. Never sent to a browser | Everything in its tenant: uploads, links for `restricted` assets, issuing media grants |
-| **User login** | A Keycloak JWT | The user's browser or app | Depends on the server settings below. Not trusted by default |
+| **Service** | A client-credentials JWT of your service's Keycloak client (Itqadem realm, audience `media-api`) | Your backend only. Never sent to a browser | Everything: uploads, links for `restricted` assets, issuing media grants |
 | **Media grant** | `mlg_…` | Issued by your backend for one browser user | Only its scopes, assets and upload sessions, for a few minutes |
 
-**Service tokens** are created by the tenant's owner with the media
-library's tenant-management API
-(`POST /tenant-management/tenants/{tenant_id}/service-tokens`, owner login
-required). The secret is shown once; store it in your backend's secret store
-(a Kubernetes secret, Vault…). Rotating it invalidates the old secret
-immediately.
-
-**User logins** are only trusted when the server verifies them: for tenants
-whose `auth_mode` is `token_exchange`, or when the server runs with
-`JWT_VERIFICATION=log` or `enforce`. Otherwise the JWT is decoded without a
-signature check, so anyone can claim any user and any role. See the server's
-[`docs/security/token-verification.md`](https://github.com/fritill-team/saas_media_library/blob/dev/docs/security/token-verification.md).
-Never grant anything based on an unverified login: use your own session and
-your own rules, then hand out links or grants.
+**Service credentials** are your service's Keycloak client (`client_id` and
+`client_secret`). Pass them to the client (`token_url`, `client_id`,
+`client_secret`); it fetches and refreshes the token. Keep the secret in
+your backend's secret store (a Kubernetes secret, Vault…). Media service
+tokens (`ml_live_…`) and user logins are no longer accepted.
 
 **Media grants** are short-lived, scoped bearer tokens signed by the media
-library. Your backend asks for one with its service token after its own
-check, and the browser uses it on `/manage`. See
+library. Your backend asks for one with its service credentials after its
+own check, and the browser uses it on `/manage`. See
 [Give browsers access with media grants](#give-browsers-access-with-media-grants).
+
+Never grant anything based on what the browser claims: use your own session
+and your own rules, then hand out links or grants.
 
 ### Visibility
 
@@ -252,9 +245,9 @@ client = MediaClient(
     client_secret=os.environ["MEDIA_CLIENT_SECRET"],
 )
 
-# HTTP, with the same credentials or a media service token
+# HTTP, with the same credentials
 client = MediaClient(transport="http", base_url="https://media.example.com",
-                     token=os.environ["MEDIA_LIBRARY_TOKEN"])
+                     token_url=..., client_id=..., client_secret=...)
 
 # Async code: the same arguments, awaitable methods
 aclient = AsyncMediaClient(transport="grpc", target=..., token_url=..., client_id=..., client_secret=...)
@@ -267,7 +260,7 @@ asset = await aclient.assets.get(asset_id)
 | `base_url` | — | HTTP: the API root, **without** `/v1` |
 | `target` | — | gRPC: `host:port` of media's grpc role (in-cluster h2c) |
 | `token_url`, `client_id`, `client_secret` | `None` | Keycloak client credentials: a token is fetched, cached and refreshed 30 s before it expires (`ClientCredentials` for more control, passed as `credentials=`) |
-| `token` | `None` | A fixed bearer token instead (e.g. a media service token, `ml_live_…`) |
+| `token` | `None` | A fixed bearer token instead (e.g. one you fetched yourself; tests) |
 | `tenant_id` | `None` | Never sent; scopes `AssetUrlCache` entries |
 | `timeout` | `30.0` | Seconds per request (HTTP) or call deadline (gRPC) |
 | `retries` | `2` | gRPC: retries of a call answered `UNAVAILABLE` |
@@ -297,7 +290,6 @@ Each client has one attribute per API:
 | `client.delivery` | `DeliveryAPI` | Download and preview links (gRPC only) |
 | `client.grants` | `GrantsAPI` | Media grants for browsers |
 | `client.permalinks` | `PermalinksAPI` | Stable public addresses for public assets |
-| `client.access` | `AssetAccessAPI` | Deprecated, HTTP only, `MediaClient` only: per-user access grants |
 
 ### Use your own `httpx.AsyncClient`
 
@@ -478,15 +470,13 @@ handles both your profile's rules and the server's 422 responses.
 
 ### Who may upload
 
-Uploads (all of `client.uploads`) are accepted only
-from a **trusted caller**: the tenant's service token, a verified user (see
-[Who is calling](#who-is-calling)), or a media grant with the `upload` scope.
-This applies to every call on the session: create, get, parts, finalize and
-abort. Anyone else gets 403 (`AuthenticationError`). The server setting
-`POLICYLESS_UPLOADS_ALLOW_UNVERIFIED_USERS=true` relaxes this to any
-authenticated caller; it is an escape hatch, not the intended setup.
+Uploads (all of `client.uploads`) are accepted only from your service
+(its Keycloak client) or a media grant with the `upload` scope (see
+[Who is calling](#who-is-calling)). This applies to every call on the
+session: create, get, parts, finalize and abort. Anyone else gets 401 or 403
+(`AuthenticationError`).
 
-Create the backend client with the service token.
+Create the backend client with your service credentials.
 
 ### Upload a file
 
@@ -611,7 +601,7 @@ Large files should go from the browser to the media library directly. Your
 backend still decides; there are four ways to let the browser in.
 
 **1. Backend creates the session, a grant covers it.** The backend checks the
-user and the file, creates the session with its service token, and issues an
+user and the file, creates the session with its service credentials, and issues an
 `upload` grant for that session only:
 
 ```python
@@ -685,7 +675,7 @@ session; the service never proxies the file.
 1. The browser posts the file's metadata to the service
    (`POST /api/videos/uploads`). The service checks the file against a named
    `UploadProfile`, runs its own rule (`can_start`), creates the session with
-   its service token, saves an `UploadRecord` (owner, profile name, context)
+   its service credentials, saves an `UploadRecord` (owner, profile name, context)
    and returns an `upload` grant for that session only.
 2. The browser uploads the parts and finalizes with the media library. Before
    the grant expires, it asks the service for a new one.
@@ -938,13 +928,10 @@ The server accepts 1 to 500 ids.
   and be cached at the edge; leaving `public` purges the edge copies. The
   bulk call counts unknown assets (`"error": "not_found"`) and server
   errors (`"internal_error"`) in `failed`.
-- While the server runs with `RESTRICTED_ASSETS_SERVICE_ONLY` or
-  `MANAGE_RESTRICTED_PREVIEWS_PRIVILEGED_ONLY`, only a privileged caller may
-  move a `restricted` asset to another visibility: a service token, a grant
-  listing the asset, or a verified user with one of the server's
-  `MANAGE_PRIVILEGED_ROLES`. Anyone else gets 403 (`AuthenticationError`), or
-  `"error": "forbidden"` in the bulk result. Making an asset `restricted` is
-  never limited.
+- Only your service or a grant listing the asset may move a `restricted`
+  asset to another visibility. Anyone else gets 403 (`AuthenticationError`),
+  or `"error": "forbidden"` in the bulk result. Making an asset `restricted`
+  is never limited.
 - After changing an asset, `invalidate` it in any `AssetUrlCache`.
 
 ### Roll back a web app
@@ -970,8 +957,7 @@ assert page.live_deploy_id == previous_deploy_id
   Activating the live deploy is a no-op. The target must be `ready`, and
   its ZIP's scan status one the gate serves (`clean`, `legacy_unscanned`,
   `skipped_too_large`).
-- Both need the `update` scope on the asset: a service token, a trusted
-  admin, or a grant with `update` listing the asset.
+- Both need your service, or a grant with `update` listing the asset.
 - The next page load serves the activated deploy; pages already open keep
   theirs until reloaded.
 - A reprocess of the asset builds a new deploy from its newest upload, which
@@ -1002,10 +988,8 @@ except ConflictError as exc:
 
 The manage `Asset`, its renditions and their variants carry preview links
 (`preview_url`, `preview_url_type`, `preview_url_expires_in`): gate links,
-`None` when the file is not in the tenant's R2 bucket. With
-`MANAGE_RESTRICTED_PREVIEWS_PRIVILEGED_ONLY=true`, a `restricted` asset's
-preview links are `None` for callers that are not privileged (thumbnails
-excepted). For links you hand to users, use `client.delivery`.
+`None` when the file is not in the tenant's R2 bucket. For links you hand
+to users, use `client.delivery` (or `MediaEmbedder`).
 
 ### Permalinks for public assets
 
@@ -1013,7 +997,7 @@ A permalink is a stable public address, `{media host}/p/{name}`, that you
 hand out once and re-point later: for example a user's avatar. Your app
 picks the name, stores the **name** (not the URL), and re-points it when the
 user uploads a new picture; every page that embedded the address follows.
-Service token only.
+Your service only.
 
 ```python
 from pkg_media import permalink_url
@@ -1165,7 +1149,7 @@ Rules:
 - **Use a cache only with service-token clients, and never share it with a
   user-token client.** Entries are keyed by tenant and asset id, not by who
   asked, and a hit makes no request. A user-token client reading the cache
-  would get the service token's results, `restricted` links included.
+  would get the service's results, `restricted` links included.
   `clear()` the cache if you `set_token` to a different principal.
 - Only `ok` results for `ready` assets are cached. `not_found`, `forbidden`,
   `error` and assets still processing are always asked again.
@@ -1214,7 +1198,7 @@ instead of failing the batch. `grants` and `cache` cannot be combined
 
 For `restricted` assets your backend decides who may open them, from its own
 data (enrollments, purchases, roles), and hands out links resolved with its
-service token. The media library still serves the files; your backend never
+service credentials. The media library still serves the files; your backend never
 proxies bytes.
 
 ```
@@ -1380,10 +1364,10 @@ What the gate returns, per requested id (duplicates included, in order):
   most the public `thumbnail_url`. A denied id that does not exist is still
   `not_found`, as on the server.
 
-The gate's client must use the tenant's **service token**: only it gets links
-for `restricted` assets. With a user token the server answers `forbidden`
-for them and the gate logs a warning. Every id is resolved with the service
-token (through the cache, when given), including denied ones, which only
+The gate's client must call as your **service** (its Keycloak client): only
+it gets links for `restricted` assets. Otherwise the server answers
+`forbidden` for them and the gate logs a warning. Every id is resolved as
+the service (through the cache, when given), including denied ones, which only
 get their thumbnail. An empty input returns `[]` without calling
 `can_access` or the media library.
 
@@ -1443,7 +1427,7 @@ hide_missing=True)`; use the gate directly for other frameworks.
 The browser can call the media library's `/manage` endpoints directly
 (uploads, and the assets a grant lists), without your backend re-implementing them. Your backend
 checks the user with its own rules, then asks for a short-lived grant with
-its service token. The media library enforces the grant. See the server's
+its service credentials. The media library enforces the grant. See the server's
 [`docs/security/media-grants.md`](https://github.com/fritill-team/saas_media_library/blob/dev/docs/security/media-grants.md).
 
 ```python
@@ -1458,9 +1442,8 @@ grant = client.grants.issue(
 response_body = grant.to_payload()  # {"grant", "grantId", "scopes", "expiresIn", "expiresAt"}
 ```
 
-The browser sends `Authorization: Bearer mlg_…`. `X-Tenant` is optional with
-a grant; when sent, it must be the grant's tenant (id or slug), or the
-request gets 401.
+The browser sends `Authorization: Bearer mlg_…` (no `X-Tenant`: media
+serves one app).
 
 ### Scopes
 
@@ -1472,10 +1455,10 @@ request gets 401.
 | `PROCESS` | `process` | Start processing, configure and retry tasks of the asset | `asset_ids` |
 | `RENDITIONS` | `renditions` | `POST /manage/assets/{id}/renditions/*` | `asset_ids` |
 | `UPLOAD` | `upload` | Create a session, then its parts, finalize, abort and get | `profile` (to create sessions) or `session_ids` (to continue them) |
-| `MANAGE_ALL` | `manage:*` | Every `/manage` endpoint of the tenant except issuing grants, like a service token | — |
+| `MANAGE_ALL` | `manage:*` | Every `/manage` endpoint except issuing grants, like your service | — |
 
 Endpoints that work across the tenant (listing assets, the processing
-stream, access grants) need `manage:*`. A request whose
+stream) need `manage:*`. A request whose
 body lists several assets is refused when any of them is not in the grant.
 
 ### Lifetime and limits
@@ -1511,9 +1494,9 @@ subject=None, ttl_seconds=None, collection_name=None)` calls
 `read(asset_ids, *, subject=None, ttl_seconds=None)` is a shortcut for a
 `read` grant. It needs at least one id (`ValueError` otherwise).
 
-Only a service token may issue grants. Errors: 422 (`ValidationError`) when
-the server rejects the request, 401/403 (`AuthenticationError`) without a
-service token, 503 (`ServerError`) when the server has no
+Only a service may issue grants. Errors: 422 (`ValidationError`) when
+the server rejects the request, 401/403 (`AuthenticationError`) when the
+caller is not a service, 503 (`ServerError`) when the server has no
 `GRANT_SIGNING_SECRET`.
 
 ### `grant_profile_payload` and `validate_file`
@@ -1593,7 +1576,7 @@ data.
 | 201 `{"grant", "grantId", "scopes", "expiresIn", "expiresAt"}` | Issued |
 | 403 `{"detail": "Not allowed"}` | `authorize` returned a falsy value |
 | 422 | Unknown profile name, `manage:*` requested, an invalid body, or a request the media library rejected |
-| 502 `{"detail": "Media library request failed"}` | The media library could not be reached, refused the service token, or failed (for example 503 without `GRANT_SIGNING_SECRET`) |
+| 502 `{"detail": "Media library request failed"}` | The media library could not be reached, refused the service credentials, or failed (for example 503 without `GRANT_SIGNING_SECRET`) |
 
 `manage:*` is never issued through this router: it covers the whole tenant,
 which no browser user should hold.
@@ -1608,13 +1591,12 @@ owns it. The browser never resolves links itself: media has no HTTP
 another service's assets over gRPC
 ([`delivery.resolve(grants=...)`](#resolve-assets-of-several-services-with-grants)).
 
-Until assets record which service created them, any service token of the
-tenant can issue a grant for any asset of the tenant: services of a tenant
-trust each other.
+Until assets record which service created them, any service can issue a
+grant for any asset: services trust each other.
 
 ### Security rules
 
-- **Never expose a service token** to a browser, a mobile app or Nuxt public
+- **Never expose your service credentials** (client secret or token) to a browser, a mobile app or Nuxt public
   runtime config. It can do everything in the tenant.
 - **Decide first, then issue.** Call `issue` only after your own check, for
   exactly what the user has on screen.
@@ -2197,20 +2179,6 @@ kinds (`web_app`, `archive`, `font`, `model_3d`, `image_batch`) are `other`.
 `BulkVisibilityResult` is a plain class with `items` (list of dicts),
 `updated` (int) and `failed` (int).
 
-### Deprecated models
-
-Used by `client.access`.
-
-#### `AssetAccessGrant`
-
-| Field | JSON key | Type | Default |
-|---|---|---|---|
-| `user_id` | `userId` | `UUID` | required |
-| `expires_at` | `expiresAt` | `datetime` | `None` |
-| `granted_at` | `grantedAt` | `datetime` | `None` |
-| `granted_by_actor_type` | `grantedByActorType` | `str` | `None` |
-| `granted_by_actor_id` | `grantedByActorId` | `str` | `None` |
-
 ## API reference
 
 Every public name, generated from `__all__` and the API classes. HTTP paths
@@ -2308,7 +2276,7 @@ entries. Grants travel as the `x-media-grants` metadata.
 
 ### `PermalinksAPI` (`client.permalinks`)
 
-`BASE = "/v1/manage/permalinks"`. Service token only. Every method raises
+`BASE = "/v1/manage/permalinks"`. Your service only. Every method raises
 `ValueError` for an invalid name before sending a request.
 
 | Method | HTTP | Returns | Raises | Does |
@@ -2443,27 +2411,16 @@ All exported from the package root. See
 `ServerError` and `UploadRejected(message, *, reason)`. See
 [Handle errors](#handle-errors).
 
-### Deprecated: `AssetAccessAPI` (`client.access`)
-
-`BASE = "/v1/manage/assets"`, `BULK_BASE = "/v1/manage/access"`. Every
-method emits a `DeprecationWarning`. Replacement: `AccessGate`.
-
-| Method | HTTP | Returns |
-|---|---|---|
-| `grant(asset_id, user_id, expires_at=None)` | `POST BASE/{id}/access` | `AssetAccessGrant` |
-| `revoke(asset_id, user_id)` | `DELETE BASE/{id}/access/{user_id}` | `None` |
-| `list(asset_id)` | `GET BASE/{id}/access` | `list[AssetAccessGrant]` |
-| `bulk_grant(asset_ids, user_id, expires_at=None)` | `POST BULK_BASE/bulk-grant` | `BulkGrantResult` (`items`, `granted`, `failed`) |
-| `bulk_revoke(asset_ids, user_id)` | `POST BULK_BASE/bulk-revoke` | `BulkRevokeResult` (`revoked`) |
-
 <a id="upgrading-and-server-compatibility"></a>
 ## Upgrading
 
-### From v0.27: no resource policies, delivery over gRPC only
+### From v0.27: no resource policies or access grants, delivery over gRPC only
 
 Breaking release. The media library removed resource policies (A6) and
-HTTP `/delivery` (A5); every itqadem service already resolves over gRPC
-and uploads with `kind`.
+HTTP `/delivery` (A5), and retired per-user access grants; every itqadem
+service already resolves over gRPC, uploads with `kind` and calls no access
+grant API. Media accepts only service Keycloak clients and media grants
+(service tokens and user logins were retired).
 
 - `client.policies` (`ResourcePoliciesAPI`, `pkg_media.resource_policies`)
   is gone, with the `ResourcePolicy`, `FileConstraints` and
@@ -2475,6 +2432,10 @@ and uploads with `kind`.
   label.
 - `client.assets.list(resource_policy_id=...)` and `Asset.resource_policy_id`
   are gone.
+- `client.access` (`AssetAccessAPI`, `pkg_media.asset_access`) and the
+  `AssetAccessGrant` model are gone: decide access in your service with
+  `AccessGate` or `MediaEmbedder`. No deprecated API (and no
+  `DeprecationWarning`) is left.
 - `client.delivery` is gRPC only: on an HTTP client every call raises
   `UnimplementedError` (the HTTP routes answer 404). Create the client with
   `transport="grpc"` for `client.delivery`, `AccessGate`, `MediaEmbedder`
@@ -2571,35 +2532,6 @@ Code written for v0.18 keeps working unchanged:
 - New features need a media library that includes them; see
   [Server compatibility](#server-compatibility).
 
-### Access grants → `can_access`
-
-Per-user access grants are being retired
-([`docs/asset-access/retirement.md`](https://github.com/fritill-team/saas_media_library/blob/dev/docs/asset-access/retirement.md)).
-
-1. **Write `can_access(user, asset_ids)`** from your own data and create an
-   `AccessGate` with the tenant's service token.
-2. **Add the media endpoint**: `create_media_router(...)`, or call
-   `gate.resolve()` / `AccessGate.to_payload()` from your own framework.
-3. **Embed the links in your own responses** (see
-   [Embed media with `MediaEmbedder`](#embed-media-with-mediaembedder)), or
-   point the frontend at your media router. Media has no HTTP `/delivery`
-   any more.
-4. **Delete `grant` / `revoke` / `bulk_grant` / `bulk_revoke` calls** and
-   any enrollment-sync jobs that fed them.
-5. Once the server's `asset_access_grant_api` and `restricted_user_resolve`
-   usage counters read zero, the media library switches to
-   `RESTRICTED_ASSETS_SERVICE_ONLY=true` and ignores grants.
-
-### Deprecated: `client.access`
-
-| Deprecated | Replacement |
-|---|---|
-| `client.access.grant/revoke/list/bulk_grant/bulk_revoke` | `AccessGate(client, can_access)` |
-
-It keeps working until the server removes the endpoints; then it will be
-removed from this client. See the [API reference](#deprecated-assetaccessapi-clientaccess)
-for its signatures.
-
 ## Server compatibility
 
 New features need a media library that includes them (the
@@ -2613,36 +2545,27 @@ resource-policy retirement release, see the server's
 | `client.grants`, `create_grant_router` | `POST /manage/grants` and `GRANT_SIGNING_SECRET` | `NotFoundError` (404); 503 without the secret |
 | `client.delivery`, `AccessGate`, `MediaEmbedder`, the media router | The gRPC `Delivery` service | Over HTTP: `UnimplementedError` (media removed HTTP `/delivery`) |
 | `delivery.resolve(grants=)` / `get(grants=)` | `x-media-grants` on gRPC `Delivery` | The metadata is ignored: assets a grant should cover come back `forbidden` |
-| `AccessGate`, `restricted` links with a service token | Service tokens resolve `restricted` assets | Items come back `forbidden` |
+| `AccessGate`, `restricted` links for your service | Services resolve `restricted` assets | Items come back `forbidden` |
 | `hls_url`, `dash_url`, `stream_url_expires_in` | Stream URLs on resolve (and `STREAM_BASE_URL` set) | The fields are `None` |
 | `download_type == "gate"` / `"unavailable"` | R2-only storage (the only types) | `presign`, `cdn` or `volume_token`, which this client no longer names |
 | `preview_url*` on the manage `Asset`, `Rendition`, `RenditionVariant` | Preview links on `/manage` | The fields are `None` |
 | `client.permalinks`, `permalink_url` | `/manage/permalinks` and `/p/` | `NotFoundError` (404) |
 | `assets.list_deploys`, `assets.activate_deploy` | Web-app rollback routes | `NotFoundError` (404) with `reason` `None` |
 
-Server settings that change what callers see, all off by default:
-
-| Setting | Effect on this client |
-|---|---|
-| `JWT_VERIFICATION=enforce` | Invalid user tokens get 401 (503 if the signing keys are unreachable) |
-| `MANAGE_AUTH=enforce` | `/manage` needs a service token, an admin or a grant: 401/403 otherwise |
-| `RESTRICTED_ASSETS_SERVICE_ONLY` | Access grants are ignored; only service tokens (and grants) get `restricted` links |
-| `MANAGE_RESTRICTED_PREVIEWS_PRIVILEGED_ONLY` | Visibility changes of `restricted` assets need a privileged caller |
-
 ## Troubleshooting
 
 **401 or 403?** 401 means the media library did not accept the credentials:
-a missing, expired or forged token, an expired grant, or a grant sent with
-another tenant's `X-Tenant`. 403 means it knows the caller but the caller may
-not do this: a user token where a service token is required (uploads,
-grants), a grant used outside its scopes or assets, or `MANAGE_AUTH=enforce`.
-Both raise `AuthenticationError`; read `exc.status_code` and `exc.body`.
+a missing, expired or forged token, a credential that is neither a service
+Keycloak client nor a media grant (old service tokens, user logins), or an
+expired grant. 403 means it knows the caller but the caller may not do this:
+a grant used outside its scopes or assets. Both raise `AuthenticationError`
+(over gRPC `UnauthenticatedError` / `PermissionDeniedError`).
 
 **Resolve returns `forbidden` items.** The caller may not open the asset:
-it is `restricted` and the client does not use a service token (check
-`token`), or the grant you passed does not list it. With `AccessGate`, a
-`forbidden` item means your `can_access` denied it, or the gate's client is
-not a service token (a warning is logged).
+it is `restricted` and the client does not call as a service, or the grant
+you passed does not list it. With `AccessGate`, a `forbidden` item means
+your `can_access` denied it, or the gate's client is not a service (a
+warning is logged).
 
 **`UnimplementedError` from `client.delivery`.** The client uses
 `transport="http"`; delivery is gRPC only. Create it with
@@ -2655,12 +2578,8 @@ is a 400 (`MediaLibraryError`) instead. Check `exc.body` for the field.
 Media has no resource policies: an upload that sends only `resource_type`
 / `collection_name` without `kind` is a 422.
 
-**403 on upload create.** The caller is not trusted: use the service token,
-or a grant with the `upload` scope. See [Who may upload](#who-may-upload).
-
-**Grant 401 "X-Tenant does not match the grant's tenant".** The request
-carries a grant and an `X-Tenant` of another tenant. Send no `X-Tenant` with
-a grant, or the grant's own tenant (id or slug).
+**403 on upload create.** The caller is not trusted: use your service
+credentials, or a grant with the `upload` scope. See [Who may upload](#who-may-upload).
 
 **Grant 401 "Invalid or expired media grant".** Issue a new grant. Grants
 cannot be refreshed.

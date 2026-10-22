@@ -319,13 +319,3 @@ class UploadAbortResult(BaseModel):
     aborted: bool
 
 
-# ── Asset access (per-user grant) models ───────────────────────────────
-
-class AssetAccessGrant(BaseModel):
-    user_id: UUID = Field(alias="userId")
-    expires_at: Optional[datetime] = Field(None, alias="expiresAt")
-    granted_at: Optional[datetime] = Field(None, alias="grantedAt")
-    granted_by_actor_type: Optional[str] = Field(None, alias="grantedByActorType")
-    granted_by_actor_id: Optional[str] = Field(None, alias="grantedByActorId")
-
-    model_config = {"populate_by_name": True}

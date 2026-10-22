@@ -1,6 +1,5 @@
 from pkg_media.client import AsyncMediaClient, MediaClient, MediaLibraryClient
 from pkg_media.credentials import ClientCredentials
-from pkg_media.asset_access import AssetAccessAPI
 from pkg_media.assets import BulkVisibilityResult
 from pkg_media.cache import AssetUrlCache
 from pkg_media.delivery import DeliveryAPI, thumbnail_url
@@ -37,7 +36,6 @@ from pkg_media.models import (
     Visibility,
     ProcessingConfig,
     Asset,
-    AssetAccessGrant,
     Rendition,
     RenditionVariant,
     DeliveryRenditionVariant,
@@ -79,7 +77,6 @@ __all__ = [
     "MediaLibraryClient",
     "ClientCredentials",
     "OpenedUploadSession",
-    "AssetAccessAPI",
     "BulkVisibilityResult",
     "AccessGate",
     "EmbeddedMedia",
@@ -113,7 +110,6 @@ __all__ = [
     "Visibility",
     "ProcessingConfig",
     "Asset",
-    "AssetAccessGrant",
     "Rendition",
     "RenditionVariant",
     "DeliveryRenditionVariant",

@@ -267,7 +267,7 @@ def test_error_for_denied_asset_is_forbidden(server) -> None:
     assert result.error == AccessGate.DENIED_ERROR
 
 
-def test_service_forbidden_for_allowed_asset_warns_about_token(server, caplog) -> None:
+def test_service_forbidden_for_allowed_asset_warns_about_credentials(server, caplog) -> None:
     asset_id = uuid4()
     server.set(asset_id, {"assetId": str(asset_id), "status": "forbidden",
                           "thumbnailUrl": ITEM_THUMB_URL.format(id=asset_id),
@@ -279,7 +279,7 @@ def test_service_forbidden_for_allowed_asset_warns_about_token(server, caplog) -
 
     assert result.status == ResolveStatus.FORBIDDEN and result.asset is None
     assert result.thumbnail_url == ITEM_THUMB_URL.format(id=asset_id)
-    assert "service token" in caplog.text
+    assert "client credentials" in caplog.text
 
 
 def test_missing_item_in_server_response_becomes_error(server) -> None:

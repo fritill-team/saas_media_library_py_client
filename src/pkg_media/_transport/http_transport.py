@@ -34,24 +34,19 @@ PROCESSING = "/v1/manage/processing-options"
 
 
 class BearerAuth(httpx.Auth):
-    """``Authorization: Bearer <token>`` from a token source, per request.
+    """``Authorization: Bearer <token>`` from a token source, per request
+    (async clients only)."""
 
-    ``sync_token`` serves sync clients (the deprecated access API).
-    """
-
-    def __init__(self, token: TokenSource, sync_token: Optional[Callable[[], str]] = None):
+    def __init__(self, token: TokenSource):
         self._token = token
-        self._sync_token = sync_token
 
     async def async_auth_flow(self, request: httpx.Request):  # type: ignore[override]
         request.headers["Authorization"] = f"Bearer {await self._token()}"
         yield request
 
     def sync_auth_flow(self, request: httpx.Request) -> Generator[httpx.Request, httpx.Response, None]:
-        if self._sync_token is None:
-            raise RuntimeError("this credential has no sync token source")
-        request.headers["Authorization"] = f"Bearer {self._sync_token()}"
-        yield request
+        raise RuntimeError("BearerAuth is for httpx.AsyncClient only")
+        yield request  # pragma: no cover - makes this a generator
 
 
 class HttpTransport:

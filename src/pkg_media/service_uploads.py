@@ -3,7 +3,7 @@
 The flow, for each of the app's upload slots (a course cover, an avatar…):
 
 1. The browser asks the app to start an upload (the app's own rule decides).
-   The app creates the upload session with its **service token** and the
+   The app creates the upload session with its **service credentials** and the
    slot's ``UploadProfile``, records who started it (``UploadRecord`` in an
    ``UploadSessionStore``), and returns an ``upload`` grant limited to that
    one session. ``integrations.fastapi.create_upload_router`` does this.
@@ -119,7 +119,7 @@ def claim_upload(
     started for this course (``record.context``), then
     ``client.uploads.verify_upload`` (finalized, the asset's blob is the
     session's, visibility and profile checks), then marks the record
-    attached. ``client`` is a ``MediaLibraryClient`` with the service token.
+    attached. ``client`` is a ``MediaClient`` calling as the service.
 
     Raises:
         UploadRejected: ``reason`` is ``UNKNOWN_SESSION`` (no record, or
