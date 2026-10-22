@@ -106,7 +106,7 @@ cannot), e.g. `secrets: gh_token=${{ secrets.MEDIA_CLIENT_READ_TOKEN }}` in
 ```
                  service token (ml_live_…)
 Your backend ─────────────────────────────▶ Media library  ── /v1/manage/…   (uploads, assets, grants)
-     │  ▲                                        ▲     │    ── /v1/delivery/… (links)
+     │  ▲                                        ▲     │    ── gRPC Delivery  (links)
      │  │ your API                               │     │
      ▼  │                                        │     ▼
   Browser ──── media grant (mlg_…) ──────────────┘   delivery gate (R2) ──▶ file bytes
@@ -125,10 +125,13 @@ the upload router.
 
 Backend services call media over gRPC (`itqadem.media.v1`, see
 [The gRPC contract](#the-grpc-contract-proto)) or HTTP, with the same client
-methods. Browsers always use HTTP: uploads with a media grant, and reads
-through your service's own [media router](#the-media-router). File bytes
-never travel over gRPC, so `uploads.upload_file` and `upload_part` need the
-HTTP transport.
+methods, with two exceptions. Delivery links (`client.delivery`, and so
+`AccessGate`, `MediaEmbedder` and the media router) are **gRPC only**: media
+removed HTTP `/delivery`. File bytes never travel over gRPC, so
+`uploads.upload_file` and `upload_part` need the HTTP transport. Browsers
+always use HTTP: uploads with a media grant, and media embedded in your
+service's own responses (or read through your
+[media router](#the-media-router)).
 
 ### Who is calling
 
@@ -136,7 +139,7 @@ The media library recognises three kinds of caller.
 
 | Caller | Looks like | Where it lives | What it may do |
 |---|---|---|---|
-| **Service token** | `ml_live_…` / `ml_test_…` | Your backend only. Never sent to a browser | Everything in its tenant: uploads without a resource policy, links for `restricted` assets, issuing media grants |
+| **Service token** | `ml_live_…` / `ml_test_…` | Your backend only. Never sent to a browser | Everything in its tenant: uploads, links for `restricted` assets, issuing media grants |
 | **User login** | A Keycloak JWT | The user's browser or app | Depends on the server settings below. Not trusted by default |
 | **Media grant** | `mlg_…` | Issued by your backend for one browser user | Only its scopes, assets and upload sessions, for a few minutes |
 
@@ -157,23 +160,22 @@ your own rules, then hand out links or grants.
 
 **Media grants** are short-lived, scoped bearer tokens signed by the media
 library. Your backend asks for one with its service token after its own
-check, and the browser uses it on `/manage` and `/delivery`. See
+check, and the browser uses it on `/manage`. See
 [Give browsers access with media grants](#give-browsers-access-with-media-grants).
 
 ### Visibility
 
 Each asset has one of three visibility tiers.
 
-| Visibility | On `/delivery` today (`DELIVERY_AUTH=off`, the default) | With `DELIVERY_AUTH=enforce` |
-|---|---|---|
-| `public` | Anyone. Gate link without a token, cached at the edge | Unchanged |
-| `private` | Anyone who sends the tenant and knows the asset id. Not an access check | Only a service token, a verified admin, or a grant listing the asset |
-| `restricted` | A service token, or a media grant listing the asset. Your app decides which users get the link. (Users holding a deprecated per-user access grant still do too, until the server sets `RESTRICTED_ASSETS_SERVICE_ONLY`) | Unchanged |
+| Visibility | Links from `client.delivery` |
+|---|---|
+| `public` | Anyone. Gate link without a token, never expires, cached at the edge |
+| `private` | A service caller, or a grant listing the asset. Tokened links |
+| `restricted` | A service caller, or a grant listing the asset. Your app decides which users get the link. Tokened links |
 
-`GET /delivery/assets` (the tenant's asset list) is also open today and
-needs a service token, an admin or a `manage:*` grant under
-`DELIVERY_AUTH=enforce`. Use `restricted` for anything only some users may
-open. See [`docs/security/media-grants.md`](https://github.com/fritill-team/saas_media_library/blob/dev/docs/security/media-grants.md).
+Use `restricted` for anything only some users may open, and read each link's
+`*_expires_in` rather than the visibility to tell tokened links from
+tokenless ones. See [`docs/security/media-grants.md`](https://github.com/fritill-team/saas_media_library/blob/dev/docs/security/media-grants.md).
 
 ### Assets, blobs, renditions and variants
 
@@ -227,7 +229,8 @@ with MediaClient(
     print(item.status, item.asset.download_url if item.asset else None)
 ```
 
-Over HTTP the same code runs with `transport="http", base_url=...`, and
+Over HTTP the same code runs with `transport="http", base_url=...`, except
+`client.delivery` (gRPC only), and
 `client.uploads.upload_file("avatar.png", profile=AVATAR)` uploads a file
 from the backend itself.
 
@@ -291,10 +294,9 @@ Each client has one attribute per API:
 | `client.uploads` | `UploadsAPI` | Upload sessions, `open_session`, `upload_file` (HTTP) |
 | `client.processing` | `ProcessingOptionsAPI` | Kinds, pipelines and step options |
 | `client.assets` | `AssetsAPI` | Manage assets: get, list, delete, visibility |
-| `client.delivery` | `DeliveryAPI` | Download and preview links |
+| `client.delivery` | `DeliveryAPI` | Download and preview links (gRPC only) |
 | `client.grants` | `GrantsAPI` | Media grants for browsers |
 | `client.permalinks` | `PermalinksAPI` | Stable public addresses for public assets |
-| `client.policies` | `ResourcePoliciesAPI` | Deprecated, HTTP only, `MediaClient` only: resource policies |
 | `client.access` | `AssetAccessAPI` | Deprecated, HTTP only, `MediaClient` only: per-user access grants |
 
 ### Use your own `httpx.AsyncClient`
@@ -476,7 +478,7 @@ handles both your profile's rules and the server's 422 responses.
 
 ### Who may upload
 
-Uploads without a resource policy (all of `client.uploads`) are accepted only
+Uploads (all of `client.uploads`) are accepted only
 from a **trusted caller**: the tenant's service token, a verified user (see
 [Who is calling](#who-is-calling)), or a media grant with the `upload` scope.
 This applies to every call on the session: create, get, parts, finalize and
@@ -910,10 +912,8 @@ for item in client.assets.resolve([result.asset_id]):
     print(item.asset_id, item.status)  # "ok" | "not_found" | "error"
 ```
 
-- `list(*, kind=None, status=None, query=None, resource_policy_id=None,
-  page=1, page_size=10)` returns a `PaginatedAssets` page. `query` searches
-  the server side; `resource_policy_id` filters assets uploaded through a
-  policy.
+- `list(*, kind=None, status=None, query=None, page=1, page_size=10)`
+  returns a `PaginatedAssets` page. `query` searches the server side.
 - `resolve(asset_ids)` takes 1 to 100 ids in one request (the server rejects
   more), and returns one `BatchResolveResult` per id.
 - `delete(asset_id)` deletes an asset and its related records.
@@ -1045,8 +1045,10 @@ src = permalink_url("https://media.example.com", "users/42/avatar")
 
 ## Get delivery links
 
-`client.delivery` (`/v1/delivery/assets`) returns slim, client-facing
-assets with download and preview links.
+`client.delivery` (the gRPC `itqadem.media.v1.Delivery` service) returns
+slim, client-facing assets with download and preview links. It needs a
+client with `transport="grpc"`: media removed HTTP `/delivery`, and every
+`client.delivery` call of an HTTP client raises `UnimplementedError`.
 
 ```python
 asset_ids = [result.asset_id, finished.asset_id]
@@ -1063,8 +1065,8 @@ listing = client.delivery.list(kind="image", page_size=50)  # no links in the li
 ```
 
 - `get(asset_id, *, grants=None)` returns a `DeliveryAsset`. A missing asset
-  is a 404 (`NotFoundError`); an asset the caller may not open is a 403
-  (`AuthenticationError`).
+  raises `NotFoundError`; an asset the caller may not open raises
+  `PermissionDeniedError` (an `AuthenticationError`).
 - `list(*, kind=None, status=None, query=None, page=1, page_size=10)` returns
   a `PaginatedDeliveryAssets` page without download links.
 - `resolve(asset_ids, *, cache=None, grants=None)` returns one
@@ -1201,8 +1203,8 @@ items = client.delivery.resolve(asset_ids, grants=[course_grant, profile_grant.g
 ```
 
 `grants` takes `MediaGrant` objects or `mlg_…` strings, at most 10
-(`DeliveryAPI.MAX_GRANTS`, `ValueError` beyond). They are sent in the
-`X-Media-Grants` header. An asset listed by any grant resolves as for its
+(`DeliveryAPI.MAX_GRANTS`, `ValueError` beyond). They are sent as the
+`x-media-grants` gRPC metadata. An asset listed by any grant resolves as for its
 owning service, `private` and `restricted` included; the others resolve as
 for the client's own token. The server ignores invalid or expired grants
 instead of failing the batch. `grants` and `cache` cannot be combined
@@ -1217,7 +1219,7 @@ proxies bytes.
 
 ```
 Browser ──▶ your backend ── can_access(user, asset_ids)?  (your data)
-                  └─ service token ─▶ POST /v1/delivery/assets/resolve ─▶ links
+                  └─ service credentials ─▶ gRPC ResolveDeliveryAssets ─▶ links
 Browser ◀── links ┘
 Browser ──▶ media library delivery gate (R2) ─▶ file
 ```
@@ -1341,11 +1343,11 @@ The GraphQL type is `EmbeddedMedia` (with `EmbeddedMediaStreams` and
 loader is kept in `info.context` (a dict or an object), never across
 requests.
 
-### `AccessGate`: your rules over `/delivery`
+### `AccessGate`: your rules over delivery
 
-When a frontend resolves arbitrary asset ids itself (a player that only
-knows ids), put an `AccessGate` in front: it runs your `can_access` over
-every id and answers with `/delivery`-shaped results.
+When a frontend resolves arbitrary asset ids itself (an editor or a player
+that only knows ids), put an `AccessGate` in front: it runs your
+`can_access` over every id and answers with delivery-shaped results.
 
 ```python
 from pkg_media import AccessGate
@@ -1358,7 +1360,7 @@ gate = AccessGate(client, can_access, cache=url_cache)
 
 results = gate.resolve(user, asset_ids)       # one result per id, in order
 one = gate.resolve_one(user, result.asset_id)
-body = AccessGate.to_payload(results)         # the JSON of POST /delivery/assets/resolve
+body = AccessGate.to_payload(results)         # {"items": [...], "total": n}, camelCase
 ```
 
 The `can_access(user, asset_ids)` contract:
@@ -1408,10 +1410,10 @@ prefix="/media", thumbnails=True)`:
 
 | Route | Same as | Responses |
 |---|---|---|
-| `POST {prefix}/resolve` with `{"assetIds": [...]}` (1 to 100) | `POST /delivery/assets/resolve` | 200 with `{"items": [{"assetId", "status", "thumbnailUrl", "asset", "error"}], "total"}` |
-| `GET {prefix}/{asset_id}` | `GET /delivery/assets/{id}` | 200 asset; 403 `{"detail", "thumbnailUrl"}`; 404; 502 |
+| `POST {prefix}/resolve` with `{"assetIds": [...]}` (1 to 100) | gRPC `ResolveDeliveryAssets` | 200 with `{"items": [{"assetId", "status", "thumbnailUrl", "asset", "error"}], "total"}` |
+| `GET {prefix}/{asset_id}` | gRPC `ResolveDeliveryAssets` (one id) | 200 asset; 403 `{"detail", "thumbnailUrl"}`; 404; 502 |
 
-`client` is a sync `MediaClient` (HTTP or gRPC) calling as your service.
+`client` is a sync `MediaClient` with `transport="grpc"` calling as your service.
 `get_current_user` is your FastAPI dependency; what it returns is passed to
 `can_access(user, asset_ids)`, called once per request with every id. Ids
 it allows are resolved (batches of 100) and come back as media answers them
@@ -1437,8 +1439,8 @@ hide_missing=True)`; use the gate directly for other frameworks.
 
 ## Give browsers access with media grants
 
-The browser can call the media library's `/manage` and `/delivery`
-endpoints directly, without your backend re-implementing them. Your backend
+The browser can call the media library's `/manage` endpoints directly
+(uploads, and the assets a grant lists), without your backend re-implementing them. Your backend
 checks the user with its own rules, then asks for a short-lived grant with
 its service token. The media library enforces the grant. See the server's
 [`docs/security/media-grants.md`](https://github.com/fritill-team/saas_media_library/blob/dev/docs/security/media-grants.md).
@@ -1463,7 +1465,7 @@ request gets 401.
 
 | `GrantScope` | Value | Allows | Needs |
 |---|---|---|---|
-| `READ` | `read` | `GET /manage/assets/{id}`, `POST /manage/assets/resolve`, the asset's renditions and processing tasks; `/delivery` for the listed assets | `asset_ids` |
+| `READ` | `read` | `GET /manage/assets/{id}`, `POST /manage/assets/resolve`, the asset's renditions and processing tasks; delivery links (gRPC, `delivery.resolve(grants=...)`) for the listed assets | `asset_ids` |
 | `UPDATE` | `update` | `PATCH /manage/assets/{id}`, `POST /manage/assets/bulk-visibility`, `GET /manage/assets/{id}/deploys`, `POST /manage/assets/{id}/deploys/{deploy_id}/activate` | `asset_ids` |
 | `DELETE` | `delete` | `DELETE /manage/assets/{id}` | `asset_ids` |
 | `PROCESS` | `process` | Start processing, configure and retry tasks of the asset | `asset_ids` |
@@ -1472,7 +1474,7 @@ request gets 401.
 | `MANAGE_ALL` | `manage:*` | Every `/manage` endpoint of the tenant except issuing grants, like a service token | — |
 
 Endpoints that work across the tenant (listing assets, the processing
-stream, resource policies, access grants) need `manage:*`. A request whose
+stream, access grants) need `manage:*`. A request whose
 body lists several assets is refused when any of them is not in the grant.
 
 ### Lifetime and limits
@@ -1597,32 +1599,13 @@ which no browser user should hold.
 
 ### Several services on one page
 
-Every link comes from the media library, and each service decides only for
-its own assets. Return a read grant with the data that references them:
-
-```python
-def lesson_response(user, lesson):
-    grant = client.grants.read([lesson.video_asset_id], subject=str(user.id))
-    return {"lesson": {"title": lesson.title, "videoAssetId": str(lesson.video_asset_id)},
-            "mediaGrant": grant.grant}
-
-payload = lesson_response(user, course.lessons[0])
-```
-
-The frontend collects the grants of every service on the page and resolves
-everything in one request:
-
-```
-POST /v1/delivery/assets/resolve
-X-Tenant: acme
-X-Media-Grants: mlg_<course service>, mlg_<profile service>
-{"assetIds": [...]}
-```
-
-An asset resolves only if a grant lists it (or it is visible to the caller
-anyway). One service's missing grant only affects that service's assets. At
-most 10 grants per request; more is a 400. From Python, pass `grants=` to
-[`delivery.resolve`](#resolve-assets-of-several-services-with-grants).
+Each service puts the media of its own records into its own responses
+([`MediaEmbedder`](#embed-media-with-mediaembedder)), after its own check, so
+a page that shows several services' assets gets each from the service that
+owns it. The browser never resolves links itself: media has no HTTP
+`/delivery`. Read grants (`client.grants.read`) still let a backend resolve
+another service's assets over gRPC
+([`delivery.resolve(grants=...)`](#resolve-assets-of-several-services-with-grants)).
 
 Until assets record which service created them, any service token of the
 tenant can issue a grant for any asset of the tenant: services of a tenant
@@ -1821,57 +1804,52 @@ transport with `retries=` (see
 
 ## Test your integration
 
-Mock the media library's HTTP API with [respx](https://lundberg.github.io/respx/),
-as this package's own tests do. Routes are the client's paths under your
-`base_url`.
+Mock the media library's HTTP API (`/v1/manage/…`) with
+[respx](https://lundberg.github.io/respx/), as this package's own tests do.
+Routes are the client's paths under your `base_url`.
+
+Delivery is gRPC only, so respx cannot stand in for it. `AccessGate` and
+`MediaEmbedder` only call `client.delivery.resolve(ids, cache=...)` and read
+`client.tenant_id`: hand them a stub that answers with
+`DeliveryBatchResolveResult`s, and test your access rules without a server:
 
 ```python
-import httpx
-import respx
+from types import SimpleNamespace
 
-from pkg_media import MediaLibraryClient, ResolveStatus
+from pkg_media import AccessGate, DeliveryBatchResolveResult, MediaEmbedder
 
-BASE = "https://media.test"
+class StubDelivery:
+    def __init__(self, items):
+        self.items = {k: DeliveryBatchResolveResult.model_validate(v) for k, v in items.items()}
+        self.calls = []
 
-@respx.mock
-def test_resolve_returns_links():
-    asset_id = "11111111-1111-1111-1111-111111111111"
-    respx.post(f"{BASE}/v1/delivery/assets/resolve").mock(
-        return_value=httpx.Response(200, json={"items": [{
-            "assetId": asset_id, "status": "ok", "thumbnailUrl": None, "error": None,
-            "asset": {"id": asset_id, "kind": "image", "status": "ready", "visibility": "private",
-                      "mimeType": "image/png", "downloadType": "gate",
-                      "downloadUrl": "https://files.test/a.png", "downloadUrlExpiresIn": 3600,
-                      "renditions": []},
-        }], "total": 1}),
-    )
-    with MediaLibraryClient(base_url=BASE, tenant_id="acme", token="ml_test_x") as test_client:
-        [item] = test_client.delivery.resolve([asset_id])
-    assert item.status == ResolveStatus.OK
-    assert item.asset.download_url == "https://files.test/a.png"
-```
+    def resolve(self, asset_ids, cache=None):
+        self.calls.append(list(asset_ids))
+        return [self.items[str(a)] for a in asset_ids]
 
-Test your access rules without the media library's links logic by mocking
-the resolve call and checking what the gate hands out:
-
-```python
-from pkg_media import AccessGate
-
-@respx.mock
 def test_gate_denies_without_enrollment():
     asset_id = "22222222-2222-2222-2222-222222222222"
-    respx.post(f"{BASE}/v1/delivery/assets/resolve").mock(
-        return_value=httpx.Response(200, json={"items": [{
-            "assetId": asset_id, "status": "forbidden", "thumbnailUrl": "https://cdn.test/t.webp",
-            "asset": None, "error": None,
-        }], "total": 1}),
-    )
-    with MediaLibraryClient(base_url=BASE, tenant_id="acme", token="ml_test_x") as test_client:
-        gate = AccessGate(test_client, lambda user, ids: [])  # nobody is enrolled
-        [item] = gate.resolve("bob", [asset_id])
+    delivery = StubDelivery({asset_id: {
+        "assetId": asset_id, "status": "ok", "thumbnailUrl": "https://cdn.test/t.webp",
+        "asset": {"id": asset_id, "kind": "image", "status": "ready", "visibility": "restricted",
+                  "mimeType": "image/png", "downloadType": "gate",
+                  "downloadUrl": "https://files.test/a.png?token=x", "downloadUrlExpiresIn": 3600},
+    }})
+    client = SimpleNamespace(delivery=delivery, tenant_id=None)
+
+    gate = AccessGate(client, lambda user, ids: [])  # nobody is enrolled
+    [item] = gate.resolve("bob", [asset_id])
     assert item.status == "forbidden" and item.asset is None
     assert item.thumbnail_url == "https://cdn.test/t.webp"
+
+    embeds = MediaEmbedder(client, lambda user, ids: ids, cache=False).embed("alice", [asset_id])
+    assert embeds[asset_id].url == "https://files.test/a.png?token=x"
+    assert embeds.tokened
 ```
+
+For the client's own gRPC calls, run an in-process server built from
+`pkg_media.contract`'s servicer base classes (this package's
+`tests/delivery_fake.py` and `tests/grpc_fake.py` do).
 
 Stub grants by mocking `POST /v1/manage/grants`, and test your FastAPI
 routes with `TestClient` and `dependency_overrides`:
@@ -1955,7 +1933,6 @@ All enums are `str` enums: they compare equal to their values.
 | `visibility` | `visibility` | `Visibility` | required |
 | `created_at` | `createdAt` | `datetime` | required |
 | `blob_id` | `blobId` | `UUID` | `None` |
-| `resource_policy_id` | `resourcePolicyId` | `UUID` | `None` |
 | `upload_session_id` | `uploadSessionId` | `UUID` | `None` |
 | `renditions` | `renditions` | `List[Rendition]` | `[]` |
 | `preview_url` | `previewUrl` | `str` | `None` |
@@ -2222,41 +2199,7 @@ kinds (`web_app`, `archive`, `font`, `model_3d`, `image_batch`) are `other`.
 
 ### Deprecated models
 
-Used by `client.policies` and `client.access`.
-
-#### `ResourcePolicy`
-
-| Field | JSON key | Type | Default |
-|---|---|---|---|
-| `id` | `id` | `UUID` | required |
-| `tenant_id` | `tenantId` | `UUID` | required |
-| `resource_type` | `resourceType` | `str` | required |
-| `collection_name` | `collectionName` | `str` | `None` |
-| `file_constraints` | `fileConstraints` | `FileConstraints` | required |
-| `permission_requirements` | `permissionRequirements` | `PermissionRequirements` | required |
-| `processing_config` | `processingConfig` | `ProcessingConfig` | required |
-| `kind` | `kind` | `AssetKind` | required |
-| `visibility` | `visibility` | `Visibility` | required |
-| `is_active` | `isActive` | `bool` | required |
-| `version` | `version` | `int` | required |
-| `created_at` | `createdAt` | `datetime` | required |
-| `updated_at` | `updatedAt` | `datetime` | required |
-
-#### `FileConstraints`
-
-| Field | JSON key | Type | Default |
-|---|---|---|---|
-| `allowed_mime_types` | `allowedMimeTypes` | `Set[str]` | required |
-| `max_size_bytes` | `maxSizeBytes` | `int` | `None` |
-| `min_size_bytes` | `minSizeBytes` | `int` | `None` |
-| `allow_multiple` | `allowMultiple` | `bool` | `False` |
-
-#### `PermissionRequirements`
-
-| Field | JSON key | Type | Default |
-|---|---|---|---|
-| `required_permissions` | `requiredPermissions` | `Set[str]` | `set()` |
-| `allow_anonymous` | `allowAnonymous` | `bool` | `False` |
+Used by `client.access`.
 
 #### `AssetAccessGrant`
 
@@ -2294,7 +2237,7 @@ ClientCredentials.for_realm(keycloak_url, realm, client_id, client_secret)
 | `close()` / `await aclose()` | Close the connections or channel (and `MediaClient`'s loop thread) | `None` |
 | context manager (`with` / `async with`) | Closes on exit | the client |
 | `uploads`, `processing`, `assets`, `delivery`, `grants`, `permalinks` | The API objects below; awaitable on `AsyncMediaClient` | — |
-| `policies`, `access` | Deprecated, `MediaClient` over HTTP only | — |
+| `access` | Deprecated, `MediaClient` over HTTP only | — |
 | `aio` | `MediaClient` only: the `AsyncMediaClient` it runs | — |
 
 The tables below give the HTTP route of each method; the gRPC method is the
@@ -2331,7 +2274,7 @@ one in the same service (`client.assets.get` → `Assets.GetAsset`, see
 
 | Method | HTTP | Returns | Raises | Does |
 |---|---|---|---|---|
-| `list(*, kind=None, status=None, query=None, resource_policy_id=None, page=1, page_size=10)` | `GET MANAGE_BASE` | `PaginatedAssets` | HTTP errors | List assets with full metadata |
+| `list(*, kind=None, status=None, query=None, page=1, page_size=10)` | `GET MANAGE_BASE` | `PaginatedAssets` | HTTP errors | List assets with full metadata |
 | `get(asset_id)` | `GET MANAGE_BASE/{id}` | `Asset` | `NotFoundError`, HTTP errors | One asset's metadata and renditions |
 | `resolve(asset_ids)` | `POST MANAGE_BASE/resolve` | `list[BatchResolveResult]` | HTTP errors (422 beyond 100 ids) | Metadata for up to 100 assets |
 | `delete(asset_id)` | `DELETE MANAGE_BASE/{id}` | `None` | `NotFoundError`, HTTP errors | Delete an asset and its records |
@@ -2342,15 +2285,17 @@ one in the same service (`client.assets.get` → `Assets.GetAsset`, see
 
 ### `DeliveryAPI` (`client.delivery`)
 
-`BASE = "/v1/delivery/assets"`, `RESOLVE_BATCH_SIZE = 100`, `MAX_GRANTS = 10`,
-`GRANTS_HEADER = "X-Media-Grants"`. `DeliveryAPI(http, *, tenant_id=None)`;
-`tenant_id` scopes cache entries.
+gRPC only (`itqadem.media.v1.Delivery`): on a client with
+`transport="http"` every method raises `UnimplementedError`.
+`RESOLVE_BATCH_SIZE = 100`, `MAX_GRANTS = 10`.
+`DeliveryAPI(transport, *, tenant_id=None)`; `tenant_id` scopes cache
+entries. Grants travel as the `x-media-grants` metadata.
 
-| Method | HTTP | Returns | Raises | Does |
+| Method | gRPC | Returns | Raises | Does |
 |---|---|---|---|---|
-| `list(*, kind=None, status=None, query=None, page=1, page_size=10)` | `GET BASE` | `PaginatedDeliveryAssets` | HTTP errors | List assets, without links |
-| `get(asset_id, *, grants=None)` | `GET BASE/{id}` | `DeliveryAsset` | `NotFoundError`, `AuthenticationError`, `ValueError` (> 10 grants), HTTP errors | One asset with its links |
-| `resolve(asset_ids, *, cache=None, grants=None)` | `POST BASE/resolve`, per 100 ids | `list[DeliveryBatchResolveResult]` | `ValueError` (> 10 grants, or both `cache` and `grants`), HTTP errors | Links for any number of assets |
+| `list(*, kind=None, status=None, query=None, page=1, page_size=10)` | `ListDeliveryAssets` | `PaginatedDeliveryAssets` | gRPC errors | List assets, without links |
+| `get(asset_id, *, grants=None)` | `GetDeliveryAsset` | `DeliveryAsset` | `NotFoundError`, `PermissionDeniedError`, `ValueError` (> 10 grants), gRPC errors | One asset with its links |
+| `resolve(asset_ids, *, cache=None, grants=None)` | `ResolveDeliveryAssets`, per 100 ids | `list[DeliveryBatchResolveResult]` | `ValueError` (> 10 grants, or both `cache` and `grants`), gRPC errors | Links for any number of assets |
 
 ### `GrantsAPI` (`client.grants`)
 
@@ -2379,13 +2324,13 @@ AccessGate(client, can_access, *, cache=None, hide_missing=False, resolve_denied
 ```
 
 `DENIED_ERROR = "Access denied"`. `cache` is an attribute. `client` is a
-sync `MediaClient` on either transport. `hide_missing=True`: every refused
+sync `MediaClient` with `transport="grpc"`. `hide_missing=True`: every refused
 id is `forbidden`, even a missing one. `resolve_denied=False`: refused ids
 are not sent to the media library (no thumbnail; implies `hide_missing`).
 
 | Method | HTTP | Returns | Raises | Does |
 |---|---|---|---|---|
-| `resolve(user, asset_ids)` | `POST /v1/delivery/assets/resolve` (via `client.delivery`) | `list[DeliveryBatchResolveResult]` | `MediaLibraryError`, `TypeError`, what `can_access` raises | Your check, then service-token links |
+| `resolve(user, asset_ids)` | `ResolveDeliveryAssets` (via `client.delivery`, gRPC) | `list[DeliveryBatchResolveResult]` | `MediaLibraryError`, `TypeError`, what `can_access` raises | Your check, then service-token links |
 | `resolve_one(user, asset_id)` | as `resolve` | `DeliveryBatchResolveResult` | as `resolve` | `resolve` for one id |
 | `to_payload(results)` (static) | — | `dict` | — | `{"items": [...], "total": n}` in the server's JSON |
 
@@ -2452,10 +2397,6 @@ camelCase JSON as a `dict`.
 | `permalink_url(media_base_url, name)` | `str` | `ValueError` (invalid name) | `{media_base_url}/p/{name}` |
 | `validate_permalink_name(name)` | `str` | `ValueError` | `name` unchanged when the server accepts it |
 | `grant_profile_payload(profile)` | `dict` | `ValueError` (empty MIME set, `max_size_bytes=0`) | The server-side grant profile for an `UploadProfile` |
-| `policy_key(resource_type, collection_name=None)` | `str` | — | `"resource_type/collection_name"` or `"resource_type"` |
-| `find_profile(profiles, resource_type, collection_name=None)` | `UploadProfile` or `None` | — | The profile replacing the policy the server used for that pair |
-| `profiles_from_policies(policies)` | `dict[str, UploadProfile]` | `ValueError` | One profile per resource policy |
-| `render_profiles_module(profiles)` | `str` | — | Python source defining `UPLOAD_PROFILES` |
 | `claim_upload(client, store, session_id, asset_id, *, owner, profile, check_record=None)` | `ClaimedUpload` | `UploadRejected`, HTTP errors | Verify a browser upload and attach it once, see [Uploads started by your backend](#uploads-started-by-your-backend) |
 
 ### `pkg_media.integrations.fastapi`
@@ -2502,29 +2443,6 @@ All exported from the package root. See
 `ServerError` and `UploadRejected(message, *, reason)`. See
 [Handle errors](#handle-errors).
 
-### Deprecated: `ResourcePoliciesAPI` (`client.policies`)
-
-`BASE = "/v1/manage/resource-policies"`. Every method emits a
-`DeprecationWarning`. Methods that take `policy_id` also accept
-`resource_type=` / `collection_name=` instead (`TypeError` for both or
-neither).
-
-| Method | HTTP | Returns | Replacement |
-|---|---|---|---|
-| `upsert(resource_type, kind, visibility, allowed_mime_types, *, collection_name=None, max_size_bytes=None, min_size_bytes=None, allow_multiple=False, required_permissions=None, allow_anonymous=False, step_options=None, use_filename_as_asset_id=False, enable_transcription=True, **deprecated_kwargs)` | `POST BASE` | `ResourcePolicy` | `UploadProfile` |
-| `get(policy_id)` | `GET BASE/{id}` | `ResourcePolicy` | — |
-| `get_by_name(resource_type, collection_name=None)` | `GET BASE` | `ResourcePolicy` (`NotFoundError` if none) | `find_profile` |
-| `list(*, resource_type=None, collection_name=None, is_active=None)` | `GET BASE` | `list[ResourcePolicy]` | — |
-| `update(policy_id=None, *, resource_type=None, collection_name=None, kind=None, visibility=None, file_constraints=None, permission_requirements=None, processing_config=None, is_active=None)` | `PUT BASE/{id}` | `ResourcePolicy` | Edit your `UploadProfile` |
-| `delete(policy_id=None, *, resource_type=None, collection_name=None, hard=False)` | `DELETE BASE/{id}` | `None` | — |
-| `activate(...)` / `deactivate(...)` | `PUT BASE/{id}` | `ResourcePolicy` | — |
-| `get_schema()` | `GET BASE/schema` | `dict` | `client.processing.get_schema()` |
-| `get_available_steps()` | `GET BASE/pipelines/available-steps` | `dict` | `client.processing.get_pipelines()` |
-| `sync_policies(policies, *, delete_stale=False, hard_delete=False)` | several | `list[ResourcePolicy]` | Profiles in your code |
-
-`upsert`'s `**deprecated_kwargs` accepts only `auto_process`, which is
-ignored with a warning.
-
 ### Deprecated: `AssetAccessAPI` (`client.access`)
 
 `BASE = "/v1/manage/assets"`, `BULK_BASE = "/v1/manage/access"`. Every
@@ -2540,6 +2458,30 @@ method emits a `DeprecationWarning`. Replacement: `AccessGate`.
 
 <a id="upgrading-and-server-compatibility"></a>
 ## Upgrading
+
+### From v0.27: no resource policies, delivery over gRPC only
+
+Breaking release. The media library removed resource policies (A6) and
+HTTP `/delivery` (A5); every itqadem service already resolves over gRPC
+and uploads with `kind`.
+
+- `client.policies` (`ResourcePoliciesAPI`, `pkg_media.resource_policies`)
+  is gone, with the `ResourcePolicy`, `FileConstraints` and
+  `PermissionRequirements` models and the policy migration tools
+  (`python -m pkg_media.migrate_policies`, `profiles_from_policies`,
+  `policy_key`, `find_profile`, `render_profiles_module`). Upload with an
+  `UploadProfile` (or `kind=`); media answers 422 to an upload that sends
+  only `resource_type` / `collection_name`. `collection_name` stays, as a
+  label.
+- `client.assets.list(resource_policy_id=...)` and `Asset.resource_policy_id`
+  are gone.
+- `client.delivery` is gRPC only: on an HTTP client every call raises
+  `UnimplementedError` (the HTTP routes answer 404). Create the client with
+  `transport="grpc"` for `client.delivery`, `AccessGate`, `MediaEmbedder`
+  and `create_media_router`. `DeliveryAPI.BASE` and
+  `DeliveryAPI.GRANTS_HEADER` are gone; grants travel as the
+  `x-media-grants` metadata.
+- The gRPC contract is unchanged: it never had policy fields.
 
 ### From v0.26: `saas_media_library` is now `pkg_media`
 
@@ -2629,72 +2571,6 @@ Code written for v0.18 keeps working unchanged:
 - New features need a media library that includes them; see
   [Server compatibility](#server-compatibility).
 
-### Resource policies → upload profiles
-
-Resource policies are being retired on the server
-([`docs/resource-policy/retirement.md`](https://github.com/fritill-team/saas_media_library/blob/dev/docs/resource-policy/retirement.md)).
-During the migration window old and new calls work side by side.
-
-1. **Generate profiles** from the tenant's current policies (needs a live
-   media library and the tenant's service token):
-
-   ```bash
-   export MEDIA_LIBRARY_TOKEN=ml_live_…   # or pass --token
-   python -m pkg_media.migrate_policies \
-       --base-url https://media.example.com \
-       --tenant acme > app/media_profiles.py
-   ```
-
-   This writes a module defining `UPLOAD_PROFILES`, keyed
-   `"resource_type/collection_name"` (or `"resource_type"`), with every
-   policy rule carried over, including `enable_transcription` as the policy
-   had it. Only active policies are converted unless you pass
-   `--include-inactive`. It exits with status 1 and a message on errors.
-   Review the module and commit it. From code:
-
-   ```python
-   import warnings
-
-   from pkg_media import find_profile, policy_key, profiles_from_policies, render_profiles_module
-
-   with warnings.catch_warnings():
-       warnings.simplefilter("ignore", DeprecationWarning)
-       policies = client.policies.list(is_active=True)
-   UPLOAD_PROFILES = profiles_from_policies(policies)
-   source = render_profiles_module(UPLOAD_PROFILES)
-   ```
-
-   `profiles_from_policies` raises `ValueError` if two policies map to the
-   same key or a policy allows a MIME type that is not `type/subtype`.
-
-2. **Upload with profiles.** Replace uploads that sent `resource_type` with
-   `upload_file(..., profile=...)` or `create_session(profile=...)`. Code
-   that has the old pair at hand looks the profile up like the server did:
-
-   ```python
-   profile = find_profile(UPLOAD_PROFILES, "courses", "cover")
-   ```
-
-   `find_profile` returns the exact `"resource_type/collection_name"`
-   profile, else the resource type's default (`"resource_type"`), else
-   `None` (no policy applied to that pair). A plain
-   `UPLOAD_PROFILES[policy_key(...)]` misses pairs the server served with the
-   default policy. Pass `collection_name=` if you still want it recorded on
-   the session.
-3. **Enforce the rules in your app.** Use `check_permissions()`, let
-   `create_session`/`upload_file` validate, and `verify_asset()` browser
-   uploads.
-4. **Remove the `sync_policies` init containers** (and their scripts,
-   secrets and config) once no upload sends `resource_type`. Profiles ship
-   with your code.
-5. **Use `client.processing`** instead of `client.policies.get_schema()` /
-   `get_available_steps()`.
-6. **Leave the policies in place** until the server removes them: assets
-   uploaded through a policy keep reading its processing config until then.
-   On a shared tenant, never prune other services' policies
-   (`delete_stale=True`). Services still on v0.16 run `sync_policies` with
-   `delete_stale=True` by default: upgrade them.
-
 ### Access grants → `can_access`
 
 Per-user access grants are being retired
@@ -2704,28 +2580,25 @@ Per-user access grants are being retired
    `AccessGate` with the tenant's service token.
 2. **Add the media endpoint**: `create_media_router(...)`, or call
    `gate.resolve()` / `AccessGate.to_payload()` from your own framework.
-3. **Point the frontend** at your endpoint instead of `/delivery` for
-   `restricted` assets, or embed the links in your own responses (see
-   [Recommended: links in your own responses](#recommended-links-in-your-own-responses)).
-   `public` and `private` assets can stay on `/delivery`.
+3. **Embed the links in your own responses** (see
+   [Embed media with `MediaEmbedder`](#embed-media-with-mediaembedder)), or
+   point the frontend at your media router. Media has no HTTP `/delivery`
+   any more.
 4. **Delete `grant` / `revoke` / `bulk_grant` / `bulk_revoke` calls** and
    any enrollment-sync jobs that fed them.
 5. Once the server's `asset_access_grant_api` and `restricted_user_resolve`
    usage counters read zero, the media library switches to
    `RESTRICTED_ASSETS_SERVICE_ONLY=true` and ignores grants.
 
-### Deprecated: `client.policies` and `client.access`
+### Deprecated: `client.access`
 
 | Deprecated | Replacement |
 |---|---|
-| `client.policies.upsert/get/get_by_name/list/update/delete/activate/deactivate`, `sync_policies` | `UploadProfile` + `client.uploads` |
-| `client.policies.get_schema()` | `client.processing.get_schema()`, in a different shape: camelCase keys (`mimeTypesByKind`, `pipelinesByKind`, `configurableSteps`), upload defaults instead of policy defaults, no `permission_schema` |
-| `client.policies.get_available_steps()` | `client.processing.get_pipelines()` |
 | `client.access.grant/revoke/list/bulk_grant/bulk_revoke` | `AccessGate(client, can_access)` |
 
-They keep working until the server removes the endpoints; then they will be
-removed from this client. See the [API reference](#deprecated-resourcepoliciesapi-clientpolicies)
-for their signatures.
+It keeps working until the server removes the endpoints; then it will be
+removed from this client. See the [API reference](#deprecated-assetaccessapi-clientaccess)
+for its signatures.
 
 ## Server compatibility
 
@@ -2735,10 +2608,11 @@ resource-policy retirement release, see the server's
 
 | Feature | Needs on the server | Against an older server |
 |---|---|---|
-| `client.uploads` without a resource policy (`UploadProfile`) | Policy-less uploads (`kind` on upload create) | `ValidationError` (422) |
+| `client.uploads` (`UploadProfile` or `kind=`) | Uploads with `kind` on create | `ValidationError` (422) |
 | `client.processing` | `/manage/processing-options/*` | `NotFoundError` (404) |
 | `client.grants`, `create_grant_router` | `POST /manage/grants` and `GRANT_SIGNING_SECRET` | `NotFoundError` (404); 503 without the secret |
-| `delivery.resolve(grants=)` / `get(grants=)` | `X-Media-Grants` on `/delivery` | The header is ignored: assets a grant should cover come back `forbidden` |
+| `client.delivery`, `AccessGate`, `MediaEmbedder`, the media router | The gRPC `Delivery` service | Over HTTP: `UnimplementedError` (media removed HTTP `/delivery`) |
+| `delivery.resolve(grants=)` / `get(grants=)` | `x-media-grants` on gRPC `Delivery` | The metadata is ignored: assets a grant should cover come back `forbidden` |
 | `AccessGate`, `restricted` links with a service token | Service tokens resolve `restricted` assets | Items come back `forbidden` |
 | `hls_url`, `dash_url`, `stream_url_expires_in` | Stream URLs on resolve (and `STREAM_BASE_URL` set) | The fields are `None` |
 | `download_type == "gate"` / `"unavailable"` | R2-only storage (the only types) | `presign`, `cdn` or `volume_token`, which this client no longer names |
@@ -2752,7 +2626,6 @@ Server settings that change what callers see, all off by default:
 |---|---|
 | `JWT_VERIFICATION=enforce` | Invalid user tokens get 401 (503 if the signing keys are unreachable) |
 | `MANAGE_AUTH=enforce` | `/manage` needs a service token, an admin or a grant: 401/403 otherwise |
-| `DELIVERY_AUTH=enforce` | `private` assets come back `forbidden` without a service token, admin or grant; `delivery.list` needs a service token, an admin or a `manage:*` grant |
 | `RESTRICTED_ASSETS_SERVICE_ONLY` | Access grants are ignored; only service tokens (and grants) get `restricted` links |
 | `MANAGE_RESTRICTED_PREVIEWS_PRIVILEGED_ONLY` | Visibility changes of `restricted` assets need a privileged caller |
 
@@ -2771,16 +2644,16 @@ it is `restricted` and the client does not use a service token (check
 `forbidden` item means your `can_access` denied it, or the gate's client is
 not a service token (a warning is logged).
 
-**`private` assets suddenly come back `forbidden`.** The server switched to
-`DELIVERY_AUTH=enforce`. Resolve them with a service token, or send read
-grants from the owning services (`grants=` / `X-Media-Grants`).
+**`UnimplementedError` from `client.delivery`.** The client uses
+`transport="http"`; delivery is gRPC only. Create it with
+`transport="grpc"` and `target=`.
 
 **422 on upload create.** The server rejected the request body: no `kind`
 (and no profile), an invalid `kind` or `visibility` value, or a field of the
 wrong type. A step name in `step_options` that is not in the kind's pipeline
 is a 400 (`MediaLibraryError`) instead. Check `exc.body` for the field.
-Against a server without policy-less uploads, every create is a 422: see
-[Server compatibility](#server-compatibility).
+Media has no resource policies: an upload that sends only `resource_type`
+/ `collection_name` without `kind` is a 422.
 
 **403 on upload create.** The caller is not trusted: use the service token,
 or a grant with the `upload` scope. See [Who may upload](#who-may-upload).
@@ -2866,8 +2739,8 @@ The services are `Assets`, `Uploads`, `Grants`, `Permalinks`, `Delivery`
 and `Processing`, unary only. File bytes never travel over gRPC:
 `Uploads.OpenSession` returns a session and an upload grant for it, the
 browser sends the parts to media's HTTP endpoints, and the service checks
-the result with `Uploads.GetSession` and `Assets.GetAsset`. Resource
-policies and asset access stay HTTP-only. `tests/test_media_contract.py`
+the result with `Uploads.GetSession` and `Assets.GetAsset`. Delivery is
+gRPC only; the deprecated asset access API stays HTTP-only. `tests/test_media_contract.py`
 checks the contract: no streaming, the error domain is the service name,
 every refusal is documented, no request carries an idempotency key or a
 credential.

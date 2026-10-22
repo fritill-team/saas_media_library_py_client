@@ -8,7 +8,7 @@ strawberry = pytest.importorskip("strawberry")
 from pkg_media import MediaEmbedder  # noqa: E402
 from pkg_media.integrations.strawberry import EmbeddedMediaType, StrawberryMedia  # noqa: E402
 
-from tests.test_embed import DOWNLOAD, THUMB, _client, server  # noqa: E402,F401
+from tests.test_embed import DOWNLOAD, THUMB, server  # noqa: E402,F401
 
 
 def _schema(media: StrawberryMedia, articles):
@@ -44,7 +44,7 @@ async def test_cover_field_batches_one_call_per_request(server) -> None:  # noqa
         calls.append((user, list(ids)))
         return [allowed]
 
-    media = StrawberryMedia(MediaEmbedder(_client(), can_access), get_user=lambda info: info.context["user"])
+    media = StrawberryMedia(MediaEmbedder(server.client(), can_access), get_user=lambda info: info.context["user"])
     schema = _schema(media, [("a", allowed), ("b", denied), ("c", None), ("d", allowed)])
     context = {"user": "alice"}
 
@@ -69,7 +69,7 @@ async def test_cover_field_batches_one_call_per_request(server) -> None:  # noqa
 
 async def test_loader_is_per_request(server) -> None:  # noqa: F811
     a = uuid4()
-    media = StrawberryMedia(MediaEmbedder(_client(), lambda u, ids: ids, cache=False), get_user=lambda info: None)
+    media = StrawberryMedia(MediaEmbedder(server.client(), lambda u, ids: ids, cache=False), get_user=lambda info: None)
     schema = _schema(media, [("a", a)])
 
     await schema.execute(QUERY, context_value={})
@@ -84,7 +84,7 @@ async def test_object_context_and_load_many(server) -> None:  # noqa: F811
     class Context:
         user = "alice"
 
-    media = StrawberryMedia(MediaEmbedder(_client(), lambda u, ids: ids), get_user=lambda info: info.context.user)
+    media = StrawberryMedia(MediaEmbedder(server.client(), lambda u, ids: ids), get_user=lambda info: info.context.user)
     info = _Info(Context())
 
     loaded = await media.load_many(info, [a, None, b])

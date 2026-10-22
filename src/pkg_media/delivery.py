@@ -4,6 +4,7 @@ from typing import Any, Dict, Iterable, List, Optional
 from uuid import UUID
 
 from pkg_media.cache import AssetUrlCache, _as_uuid
+from pkg_media.exceptions import UnimplementedError
 from pkg_media.models import (
     AssetKind,
     AssetStatus,
@@ -18,19 +19,20 @@ _NO_RESULT_ERROR = "The media library returned no result for this asset"
 
 
 class DeliveryAPI:
-    """Delivery links (HTTP ``/delivery/assets``, gRPC
-    ``itqadem.media.v1.Delivery``): slim assets with download URLs.
+    """Delivery links (gRPC ``itqadem.media.v1.Delivery``): slim assets with
+    download URLs.
+
+    gRPC only: media removed HTTP ``/delivery``, so every method of a client
+    with ``transport="http"`` raises ``UnimplementedError``.
 
     A service caller also gets links for RESTRICTED assets; the consuming app
     decides which of its users may receive them.
     """
 
-    BASE = "/v1/delivery/assets"
-    # Server limit on assetIds per POST /delivery/assets/resolve.
+    # Server limit on asset ids per ResolveDeliveryAssets call.
     RESOLVE_BATCH_SIZE = 100
-    # Server limit on grants per request (X-Media-Grants).
+    # Server limit on grants per request (``x-media-grants`` metadata).
     MAX_GRANTS = 10
-    GRANTS_HEADER = "X-Media-Grants"
 
     def __init__(self, transport: Any, *, tenant_id: Optional[str] = None):
         self._transport = transport
@@ -54,7 +56,7 @@ class DeliveryAPI:
             params["status"] = str(status)
         if query is not None:
             params["query"] = query
-        return await self._transport.list_delivery_assets(params)
+        return await self._grpc().list_delivery_assets(params)
 
     async def get(self, asset_id: UUID | str, *, grants: Optional[Iterable[str]] = None) -> DeliveryAsset:
         """Get a single asset with its download URL and renditions.
@@ -62,7 +64,7 @@ class DeliveryAPI:
         ``grants``: media grants (``mlg_…``) that may list the asset, as for
         ``resolve``.
         """
-        return await self._transport.get_delivery_asset(str(asset_id), _grant_tokens(grants))
+        return await self._grpc().get_delivery_asset(str(asset_id), _grant_tokens(grants))
 
     async def resolve(
         self,
@@ -95,10 +97,9 @@ class DeliveryAPI:
         ``grants``: read grants (``mlg_…``, at most ``MAX_GRANTS``), e.g. one
         from each service whose assets a page shows. An asset listed by any
         of them resolves as for its owning service (PRIVATE and RESTRICTED
-        included); the others as for this client's own token. Sent as
-        ``X-Media-Grants``; the server ignores invalid or expired grants
-        instead of failing the batch. Not combinable with ``cache``. Over gRPC
-        they travel as the ``x-media-grants`` metadata.
+        included); the others as for this client's own token. Sent as the
+        ``x-media-grants`` metadata; the server ignores invalid or expired
+        grants instead of failing the batch. Not combinable with ``cache``.
         """
         tokens = _grant_tokens(grants)
         if tokens and cache is not None:
@@ -119,8 +120,15 @@ class DeliveryAPI:
         results: List[DeliveryBatchResolveResult] = []
         for start in range(0, len(ids), self.RESOLVE_BATCH_SIZE):
             batch = ids[start:start + self.RESOLVE_BATCH_SIZE]
-            results.extend(await self._transport.resolve_delivery_assets(batch, grants or []))
+            results.extend(await self._grpc().resolve_delivery_assets(batch, grants or []))
         return results
+
+    def _grpc(self) -> Any:
+        if not hasattr(self._transport, "resolve_delivery_assets"):
+            raise UnimplementedError(
+                "client.delivery needs transport=\"grpc\": the media library removed HTTP /delivery"
+            )
+        return self._transport
 
 
 def thumbnail_url(result: DeliveryBatchResolveResult) -> Optional[str]:

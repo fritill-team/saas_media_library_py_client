@@ -1,24 +1,22 @@
 from __future__ import annotations
 
 import json
-from typing import List
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
+import grpc
 import httpx
 import pydantic
 import pytest
-import respx
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.testclient import TestClient
 
-from pkg_media import AccessGate, AssetUrlCache, MediaLibraryClient
+from pkg_media import AssetUrlCache
 from pkg_media.exceptions import MediaLibraryError
 from pkg_media.integrations.fastapi import MAX_RESOLVE_IDS, create_media_router
+from tests import delivery_fake
 
 
-BASE_URL = "https://media.test"
 TENANT_ID = str(uuid4())
-RESOLVE_URL = f"{BASE_URL}/v1/delivery/assets/resolve"
 
 
 def _asset_json(asset_id) -> dict:
@@ -64,35 +62,23 @@ def _asset_json(asset_id) -> dict:
     }
 
 
-class FakeMediaLibrary:
-    def __init__(self) -> None:
-        self.missing: set = set()
-        self.broken: set = set()
-        self.requests: List[List[str]] = []
-
-    def __call__(self, request: httpx.Request) -> httpx.Response:
-        ids = json.loads(request.content)["assetIds"]
-        self.requests.append(ids)
-        items = []
-        for aid in ids:
-            if aid in self.missing:
-                items.append({"assetId": aid, "status": "not_found", "thumbnailUrl": None,
-                              "asset": None, "error": None})
-            elif aid in self.broken:
-                items.append({"assetId": aid, "status": "error", "thumbnailUrl": None,
-                              "asset": None, "error": "Blob not found for asset"})
-            else:
-                items.append({"assetId": aid, "status": "ok",
-                              "thumbnailUrl": f"https://s3.test/{aid}-thumb.webp?sig=thumb",
-                              "asset": _asset_json(aid), "error": None})
-        return httpx.Response(200, json={"items": items, "total": len(items)})
-
-
 @pytest.fixture
 def media():
-    fake = FakeMediaLibrary()
-    with respx.mock(assert_all_called=False) as mock:
-        mock.post(RESOLVE_URL).mock(side_effect=fake)
+    """The media library's gRPC Delivery; ids in ``missing`` / ``broken`` are
+    ``not_found`` / ``error``, the others ``ok``."""
+    missing: set = set()
+    broken: set = set()
+
+    def answer(aid):
+        if aid in missing:
+            return {"assetId": aid, "status": "not_found"}
+        if aid in broken:
+            return {"assetId": aid, "status": "error", "error": "Blob not found for asset"}
+        return {"assetId": aid, "status": "ok", "thumbnailUrl": f"https://s3.test/{aid}-thumb.webp?sig=thumb",
+                "asset": _asset_json(aid)}
+
+    with delivery_fake.serve(answer) as fake:
+        fake.missing, fake.broken = missing, broken
         yield fake
 
 
@@ -108,7 +94,7 @@ def seen_users():
 
 
 @pytest.fixture
-def app(enrollments, seen_users):
+def app(media, enrollments, seen_users):
     def can_access(user, asset_ids):
         seen_users.append(user)
         return [a for a in asset_ids if str(a) in enrollments.get(user["id"], set())]
@@ -118,7 +104,7 @@ def app(enrollments, seen_users):
             raise HTTPException(status_code=401, detail="Not authenticated")
         return {"id": x_user}
 
-    client = MediaLibraryClient(base_url=BASE_URL, tenant_id=TENANT_ID, token="service-token")
+    client = media.client(tenant_id=TENANT_ID)
     cache = AssetUrlCache()
     app = FastAPI()
     app.include_router(create_media_router(client, can_access, get_current_user, cache=cache))
@@ -205,48 +191,34 @@ def test_unauthenticated_user_is_rejected_by_the_app_dependency(media, http) -> 
     assert media.requests == []
 
 
-def test_media_library_failure_is_a_502_not_the_users_401(http) -> None:
-    with respx.mock:
-        respx.post(RESOLVE_URL).mock(return_value=httpx.Response(401, json={"detail": "token expired"}))
-        resp = http.post("/media/resolve", json={"assetIds": [str(uuid4())]}, headers={"X-User": "a"})
+def test_media_library_failure_is_a_502_not_the_users_401(media, http) -> None:
+    media.fail(grpc.StatusCode.UNAUTHENTICATED)
+    resp = http.post("/media/resolve", json={"assetIds": [str(uuid4())]}, headers={"X-User": "a"})
 
     assert resp.status_code == 502
     assert resp.json() == {"detail": "Media library request failed"}
 
 
 @pytest.mark.parametrize(
-    "error",
-    [httpx.ConnectError("refused"), httpx.ConnectTimeout("slow"), httpx.ReadTimeout("slow")],
-    ids=["connect-error", "connect-timeout", "read-timeout"],
+    "status",
+    [grpc.StatusCode.UNAVAILABLE, grpc.StatusCode.DEADLINE_EXCEEDED, grpc.StatusCode.INTERNAL],
 )
-def test_unreachable_media_library_is_a_502(http, error) -> None:
+def test_unreachable_media_library_is_a_502(media, http, status) -> None:
     asset_id = str(uuid4())
-    with respx.mock:
-        respx.post(RESOLVE_URL).mock(side_effect=error)
-        resolve = http.post("/media/resolve", json={"assetIds": [asset_id]}, headers={"X-User": "a"})
-        get = http.get(f"/media/{asset_id}", headers={"X-User": "a"})
+    media.fail(status, status)
+    resolve = http.post("/media/resolve", json={"assetIds": [asset_id]}, headers={"X-User": "a"})
+    get = http.get(f"/media/{asset_id}", headers={"X-User": "a"})
 
     for resp in (resolve, get):
         assert resp.status_code == 502
         assert resp.json() == {"detail": "Media library request failed"}
 
 
-@pytest.mark.parametrize(
-    "response",
-    [
-        httpx.Response(200, text="<html>Bad gateway</html>"),
-        httpx.Response(200, json={"unexpected": True}),
-        httpx.Response(200, json=[]),
-        httpx.Response(200, json={"items": [{"status": "ok"}], "total": 1}),
-    ],
-    ids=["not-json", "no-items", "not-an-object", "item-without-asset-id"],
-)
-def test_malformed_media_library_response_is_a_502(http, response) -> None:
+def test_malformed_media_library_response_is_a_502(media, http) -> None:
     asset_id = str(uuid4())
-    with respx.mock:
-        respx.post(RESOLVE_URL).mock(return_value=response)
-        resolve = http.post("/media/resolve", json={"assetIds": [asset_id]}, headers={"X-User": "a"})
-        get = http.get(f"/media/{asset_id}", headers={"X-User": "a"})
+    media.set(asset_id, {"status": "ok"})  # no asset id
+    resolve = http.post("/media/resolve", json={"assetIds": [asset_id]}, headers={"X-User": "a"})
+    get = http.get(f"/media/{asset_id}", headers={"X-User": "a"})
 
     for resp in (resolve, get):
         assert resp.status_code == 502
@@ -255,7 +227,7 @@ def test_malformed_media_library_response_is_a_502(http, response) -> None:
 
 def test_app_errors_are_not_reported_as_media_library_failures(media) -> None:
     # A can_access bug is the app's own 500, not a 502.
-    client = MediaLibraryClient(base_url=BASE_URL, tenant_id=TENANT_ID, token="service-token")
+    client = media.client(tenant_id=TENANT_ID)
     app = FastAPI()
     app.include_router(create_media_router(client, lambda user, ids: None, lambda: "u"))
 
@@ -288,7 +260,7 @@ def test_can_access_errors_of_media_library_types_stay_500(media, make_error) ->
     def can_access(user, ids):
         raise make_error()
 
-    client = MediaLibraryClient(base_url=BASE_URL, tenant_id=TENANT_ID, token="service-token")
+    client = media.client(tenant_id=TENANT_ID)
     app = FastAPI()
     app.include_router(create_media_router(client, can_access, lambda: "u"))
     http = TestClient(app, raise_server_exceptions=False)
@@ -306,7 +278,7 @@ def test_can_access_media_library_error_answers_502(media) -> None:
     def can_access(user, ids):
         raise MediaLibraryError("can_access called the media library")
 
-    client = MediaLibraryClient(base_url=BASE_URL, tenant_id=TENANT_ID, token="service-token")
+    client = media.client(tenant_id=TENANT_ID)
     app = FastAPI()
     app.include_router(create_media_router(client, can_access, lambda: "u"))
     http = TestClient(app, raise_server_exceptions=False)
@@ -416,7 +388,7 @@ def test_a_full_batch_is_one_media_request(media, http, enrollments) -> None:
 
 def test_without_thumbnails_denied_ids_are_not_sent_to_media(media, enrollments) -> None:
     allowed_id, denied_id = str(uuid4()), str(uuid4())
-    client = MediaLibraryClient(base_url=BASE_URL, token="service-token")
+    client = media.client()
     app = FastAPI()
     app.include_router(create_media_router(
         client, lambda user, ids: [allowed_id], lambda: "u", thumbnails=False,

@@ -22,6 +22,7 @@ from pkg_media import (
     grant_profile_payload,
 )
 from pkg_media.integrations.fastapi import create_grant_router
+from tests import delivery_fake
 
 BASE_URL = "https://media.test"
 GRANTS_URL = f"{BASE_URL}/v1/manage/grants"
@@ -144,10 +145,7 @@ def test_grant_route_hides_service_token_failures(app_client):
     assert response.status_code == 502
 
 
-# ── delivery with grants of several services ──
-
-DELIVERY_URL = f"{BASE_URL}/v1/delivery/assets"
-
+# ── delivery with grants of several services (gRPC) ──
 
 @respx.mock
 def test_read_grant_helper():
@@ -161,39 +159,29 @@ def test_read_grant_helper():
         _client().grants.read([])
 
 
-@respx.mock
-def test_resolve_sends_every_grant_in_one_header():
-    seen = []
+def test_resolve_sends_every_grant_in_one_metadata_entry():
+    with delivery_fake.serve(lambda a: {"assetId": a, "status": "forbidden"}) as media:
+        client = media.client()
+        ids = [uuid4() for _ in range(150)]  # two batches, the grants on both
+        grant = SimpleNamespace(grant="mlg_b")  # a MediaGrant works too
+        results = client.delivery.resolve(ids, grants=["mlg_a", grant, "mlg_a"])
+        assert len(results) == 150
+        assert [m.get("x-media-grants") for m in media.metadata] == ["mlg_a, mlg_b", "mlg_a, mlg_b"]
 
-    def handler(request):
-        seen.append(request.headers.get("x-media-grants"))
-        ids = json.loads(request.content)["assetIds"]
-        return httpx.Response(200, json={"items": [{"assetId": a, "status": "forbidden"} for a in ids]})
+        client.delivery.resolve(ids[:1])
+        assert "x-media-grants" not in media.metadata[-1]
 
-    respx.post(f"{DELIVERY_URL}/resolve").mock(side_effect=handler)
-    client = _client()
-    ids = [uuid4() for _ in range(150)]  # two batches, the header on both
-    grant = SimpleNamespace(grant="mlg_b")  # a MediaGrant works too
-    results = client.delivery.resolve(ids, grants=["mlg_a", grant, "mlg_a"])
-    assert len(results) == 150 and seen == ["mlg_a, mlg_b", "mlg_a, mlg_b"]
-
-    client.delivery.resolve(ids[:1])
-    assert seen[-1] is None
-
-    with pytest.raises(ValueError):
-        client.delivery.resolve(ids, grants=[f"mlg_{i}" for i in range(11)])
-    from pkg_media import AssetUrlCache
-    with pytest.raises(ValueError):
-        client.delivery.resolve(ids, grants=["mlg_a"], cache=AssetUrlCache())
+        with pytest.raises(ValueError):
+            client.delivery.resolve(ids, grants=[f"mlg_{i}" for i in range(11)])
+        from pkg_media import AssetUrlCache
+        with pytest.raises(ValueError):
+            client.delivery.resolve(ids, grants=["mlg_a"], cache=AssetUrlCache())
 
 
-@respx.mock
 def test_get_sends_grants():
-    asset = uuid4()
-    route = respx.get(f"{DELIVERY_URL}/{asset}").mock(return_value=httpx.Response(200, json={
-        "id": str(asset), "kind": "image", "title": "x", "status": "ready", "visibility": "private",
-        "mimeType": "image/png", "renditions": [], "downloadType": "gate",
-        "downloadUrl": "https://files/x", "downloadUrlExpiresIn": 300,
-    }))
-    _client().delivery.get(asset, grants="mlg_a")
-    assert route.calls.last.request.headers["x-media-grants"] == "mlg_a"
+    asset = {"id": "", "kind": "image", "title": "x", "status": "ready", "visibility": "private",
+             "mimeType": "image/png", "renditions": [], "downloadType": "gate",
+             "downloadUrl": "https://files/x", "downloadUrlExpiresIn": 300}
+    with delivery_fake.serve(lambda a: {"assetId": a, "status": "ok", "asset": {**asset, "id": a}}) as media:
+        media.client().delivery.get(uuid4(), grants="mlg_a")
+        assert media.metadata[-1]["x-media-grants"] == "mlg_a"

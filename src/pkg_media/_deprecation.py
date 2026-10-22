@@ -1,5 +1,4 @@
-"""DeprecationWarning helper for the APIs being retired (client.policies,
-client.access)."""
+"""DeprecationWarning helper for the APIs being retired (client.access)."""
 
 from __future__ import annotations
 
@@ -11,7 +10,7 @@ from typing import Any, Callable, TypeVar
 F = TypeVar("F", bound=Callable[..., Any])
 
 # Set while a deprecated method runs, so the deprecated methods it calls
-# internally (e.g. sync_policies -> upsert) do not warn again.
+# internally do not warn again.
 _in_deprecated_call: ContextVar[bool] = ContextVar("in_deprecated_call", default=False)
 
 

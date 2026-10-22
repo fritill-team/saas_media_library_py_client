@@ -1,25 +1,21 @@
 from __future__ import annotations
 
 import json
-from typing import Dict, List, Optional
+from typing import Optional
 from uuid import UUID, uuid4
 
-import httpx
 import pytest
-import respx
 
 from pkg_media import (
     AssetUrlCache,
     DeliveryBatchResolveResult,
     EmbeddedMedia,
     MediaEmbedder,
-    MediaLibraryClient,
 )
+from tests import delivery_fake
 
 
-BASE_URL = "https://media.test"
 TENANT_ID = str(uuid4())
-RESOLVE_URL = f"{BASE_URL}/v1/delivery/assets/resolve"
 
 DOWNLOAD = "https://media.test/o/{id}?token=download"
 HLS = "https://stream.test/s/stoken/{id}/master.m3u8"
@@ -82,31 +78,12 @@ def _ok(asset_id, asset: dict) -> dict:
     return {"assetId": str(asset_id), "status": "ok", "thumbnailUrl": None, "asset": asset, "error": None}
 
 
-class FakeServer:
-    def __init__(self) -> None:
-        self.items: Dict[str, dict] = {}
-        self.requests: List[List[str]] = []
-
-    def set(self, asset_id, item: dict) -> None:
-        self.items[str(asset_id)] = item
-
-    def __call__(self, request: httpx.Request) -> httpx.Response:
-        ids = json.loads(request.content)["assetIds"]
-        self.requests.append(ids)
-        items = [self.items.get(a) or _ok(a, _video(a)) for a in ids]
-        return httpx.Response(200, json={"items": items, "total": len(items)})
-
-
 @pytest.fixture
 def server():
-    fake = FakeServer()
-    with respx.mock(assert_all_called=False) as mock:
-        mock.post(RESOLVE_URL).mock(side_effect=fake)
+    with delivery_fake.serve(lambda a: _ok(a, _video(a))) as fake:
         yield fake
 
 
-def _client() -> MediaLibraryClient:
-    return MediaLibraryClient(base_url=BASE_URL, tenant_id=TENANT_ID, token="service-token")
 
 
 def _allow(*ids):
@@ -232,7 +209,7 @@ def test_not_found_is_empty() -> None:
 
 def test_allowed_and_denied(server) -> None:
     allowed, denied = uuid4(), uuid4()
-    embedder = MediaEmbedder(_client(), _allow(allowed))
+    embedder = MediaEmbedder(server.client(tenant_id=TENANT_ID), _allow(allowed))
 
     embeds = embedder.embed("alice", [allowed, denied])
 
@@ -254,7 +231,7 @@ def test_allowed_and_denied(server) -> None:
 def test_denied_tokened_thumbnail_keeps_its_expiry(server) -> None:
     denied = uuid4()
     server.set(denied, _ok(denied, _video(denied, thumb_expires=3600)))
-    embeds = MediaEmbedder(_client(), _allow()).embed("mallory", [denied])
+    embeds = MediaEmbedder(server.client(tenant_id=TENANT_ID), _allow()).embed("mallory", [denied])
 
     assert embeds[denied].thumbnail_url == THUMB_TOKENED.format(id=denied)
     assert embeds[denied].expires_in == 3600
@@ -266,7 +243,7 @@ def test_denied_thumbnail_with_unknown_expiry_is_dropped(server) -> None:
     # Media refused the service itself: only an item-level thumbnail, no asset.
     server.set(denied, {"assetId": str(denied), "status": "forbidden",
                         "thumbnailUrl": THUMB.format(id=denied), "asset": None, "error": "no"})
-    embeds = MediaEmbedder(_client(), _allow()).embed("mallory", [denied])
+    embeds = MediaEmbedder(server.client(tenant_id=TENANT_ID), _allow()).embed("mallory", [denied])
 
     assert embeds[denied].thumbnail_url is None
     assert embeds[denied].public is False
@@ -274,7 +251,7 @@ def test_denied_thumbnail_with_unknown_expiry_is_dropped(server) -> None:
 
 def test_denied_without_thumbnails_is_not_resolved(server) -> None:
     denied = uuid4()
-    embeds = MediaEmbedder(_client(), _allow(), thumbnails=False).embed("mallory", [denied])
+    embeds = MediaEmbedder(server.client(tenant_id=TENANT_ID), _allow(), thumbnails=False).embed("mallory", [denied])
 
     assert server.requests == []
     assert embeds[denied].url is None and embeds[denied].thumbnail_url is None
@@ -283,7 +260,7 @@ def test_denied_without_thumbnails_is_not_resolved(server) -> None:
 def test_missing_asset_looks_like_denied(server) -> None:
     missing = uuid4()
     server.set(missing, {"assetId": str(missing), "status": "not_found", "asset": None})
-    embeds = MediaEmbedder(_client(), _allow(missing)).embed("alice", [missing])
+    embeds = MediaEmbedder(server.client(tenant_id=TENANT_ID), _allow(missing)).embed("alice", [missing])
 
     assert embeds[missing].url is None
     assert embeds.tokened is False
@@ -294,7 +271,7 @@ def test_only_public_links_are_not_tokened(server) -> None:
     a, b = uuid4(), uuid4()
     server.set(a, _ok(a, _image(a)))
     server.set(b, _ok(b, _image(b)))
-    embeds = MediaEmbedder(_client(), _allow(a, b)).embed("alice", [a, b])
+    embeds = MediaEmbedder(server.client(tenant_id=TENANT_ID), _allow(a, b)).embed("alice", [a, b])
 
     assert embeds.tokened is False
     assert all(m.public for m in embeds.values())
@@ -308,7 +285,7 @@ def test_none_and_duplicate_ids(server) -> None:
         calls.append(list(ids))
         return ids
 
-    embedder = MediaEmbedder(_client(), can_access)
+    embedder = MediaEmbedder(server.client(tenant_id=TENANT_ID), can_access)
     embeds = embedder.embed("alice", [a, None, str(a)])
 
     assert list(embeds) == [a]
@@ -323,7 +300,7 @@ def test_none_and_duplicate_ids(server) -> None:
 def test_cache_hit_makes_no_call(server) -> None:
     a = uuid4()
     clock = [0.0]
-    embedder = MediaEmbedder(_client(), _allow(a), cache=AssetUrlCache(clock=lambda: clock[0]))
+    embedder = MediaEmbedder(server.client(tenant_id=TENANT_ID), _allow(a), cache=AssetUrlCache(clock=lambda: clock[0]))
 
     first = embedder.embed("alice", [a])
     clock[0] = 100.0
@@ -337,7 +314,7 @@ def test_cache_hit_makes_no_call(server) -> None:
 
 def test_cache_false_always_calls(server) -> None:
     a = uuid4()
-    embedder = MediaEmbedder(_client(), _allow(a), cache=False)
+    embedder = MediaEmbedder(server.client(tenant_id=TENANT_ID), _allow(a), cache=False)
     assert embedder.cache is None
 
     embedder.embed("alice", [a])
@@ -349,7 +326,7 @@ def test_cache_false_always_calls(server) -> None:
 def test_shared_cache_is_used(server) -> None:
     cache = AssetUrlCache()
     a = uuid4()
-    embedder = MediaEmbedder(_client(), _allow(a), cache=cache)
+    embedder = MediaEmbedder(server.client(tenant_id=TENANT_ID), _allow(a), cache=cache)
     embedder.embed("alice", [a])
 
     assert embedder.cache is cache
@@ -358,7 +335,7 @@ def test_shared_cache_is_used(server) -> None:
 
 async def test_aembed(server) -> None:
     a = uuid4()
-    embeds = await MediaEmbedder(_client(), _allow(a)).aembed("alice", [a])
+    embeds = await MediaEmbedder(server.client(tenant_id=TENANT_ID), _allow(a)).aembed("alice", [a])
 
     assert isinstance(embeds[a].asset_id, UUID)
     assert embeds[a].url == DOWNLOAD.format(id=a)

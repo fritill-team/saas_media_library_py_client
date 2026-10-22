@@ -51,7 +51,7 @@ class OpenedUploadSession:
 
 
 class UploadsAPI:
-    """Chunked uploads without a resource policy.
+    """Chunked uploads (``kind`` is always sent: media has no resource policies).
 
     The app's ``UploadProfile`` supplies the kind, visibility and processing
     settings, and checks the file before anything is sent. The server accepts

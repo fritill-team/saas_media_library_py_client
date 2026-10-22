@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -67,52 +67,17 @@ class DownloadType(StrEnum):
                                    # R2 bucket (``download_url`` is None)
 
 
-# ── Resource Policy models ─────────────────────────────────────────────
-
-class FileConstraints(BaseModel):
-    allowed_mime_types: Set[str] = Field(alias="allowedMimeTypes")
-    max_size_bytes: Optional[int] = Field(None, alias="maxSizeBytes")
-    min_size_bytes: Optional[int] = Field(None, alias="minSizeBytes")
-    allow_multiple: bool = Field(False, alias="allowMultiple")
-
-    model_config = {"populate_by_name": True}
-
-
-class PermissionRequirements(BaseModel):
-    required_permissions: Set[str] = Field(default_factory=set, alias="requiredPermissions")
-    allow_anonymous: bool = Field(False, alias="allowAnonymous")
-
-    model_config = {"populate_by_name": True}
-
+# ── Upload processing config ───────────────────────────────────────
 
 class ProcessingConfig(BaseModel):
     step_options: Optional[Dict[str, Dict[str, Any]]] = Field(None, alias="stepOptions")
     use_filename_as_asset_id: bool = Field(False, alias="useFilenameAsAssetId")
-    # False, as the server's upload default. Resource policy responses always
-    # carry the field, so a policy keeps its own value.
+    # False, as the server's upload default.
     enable_transcription: bool = Field(False, alias="enableTranscription")
 
     # Ignore unknown fields (e.g., legacy `autoProcess`) so older API responses
     # don't break the client.
     model_config = {"populate_by_name": True, "extra": "ignore"}
-
-
-class ResourcePolicy(BaseModel):
-    id: UUID
-    tenant_id: UUID = Field(alias="tenantId")
-    resource_type: str = Field(alias="resourceType")
-    collection_name: Optional[str] = Field(None, alias="collectionName")
-    file_constraints: FileConstraints = Field(alias="fileConstraints")
-    permission_requirements: PermissionRequirements = Field(alias="permissionRequirements")
-    processing_config: ProcessingConfig = Field(alias="processingConfig")
-    kind: AssetKind
-    visibility: Visibility
-    is_active: bool = Field(alias="isActive")
-    version: int
-    created_at: datetime = Field(alias="createdAt")
-    updated_at: datetime = Field(alias="updatedAt")
-
-    model_config = {"populate_by_name": True}
 
 
 # ── Rendition models ───────────────────────────────────────────────────
@@ -170,7 +135,6 @@ class Asset(BaseModel):
     visibility: Visibility
     created_at: datetime = Field(alias="createdAt")
     blob_id: Optional[UUID] = Field(None, alias="blobId")
-    resource_policy_id: Optional[UUID] = Field(None, alias="resourcePolicyId")
     # The upload session that created the asset. None from servers that
     # don't return it, and for assets not created by an upload session.
     upload_session_id: Optional[UUID] = Field(None, alias="uploadSessionId")
@@ -249,7 +213,7 @@ class BatchResolveResult(BaseModel):
 
 
 class DeliveryBatchResolveResult(BaseModel):
-    """One item of ``POST /delivery/assets/resolve``.
+    """One item of a delivery resolve (gRPC ``ResolveDeliveryAssets``).
 
     ``status`` is one of ``ResolveStatus``: ``ok`` (``asset`` is set),
     ``not_found``, ``forbidden`` or ``error`` (``error`` explains why).

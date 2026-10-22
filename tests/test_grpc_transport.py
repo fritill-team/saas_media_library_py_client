@@ -268,8 +268,8 @@ def test_list_sends_the_filters(client, fake) -> None:
     )
 
 
-def test_the_deprecated_policy_filter_is_http_only(client) -> None:
-    with pytest.raises(ValueError):
+def test_assets_list_has_no_policy_filter(client) -> None:
+    with pytest.raises(TypeError):
         client.assets.list(resource_policy_id=uuid4())
 
 
@@ -384,9 +384,7 @@ def test_verify_upload_works_over_grpc(client, fake) -> None:
     assert str(asset.id) == asset_id
 
 
-def test_deprecated_policy_and_access_apis_are_http_only(client) -> None:
-    with pytest.raises(MediaLibraryError, match="HTTP-only"):
-        client.policies.list()
+def test_deprecated_access_api_is_http_only(client) -> None:
     with pytest.raises(MediaLibraryError, match="HTTP-only"):
         client.access.list(uuid4())
 

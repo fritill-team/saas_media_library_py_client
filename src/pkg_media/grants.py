@@ -103,11 +103,10 @@ class GrantsAPI:
     ) -> MediaGrant:
         """A read grant for assets your app returns to one of its users.
 
-        Return it with your data (e.g. ``{"lesson": …, "mediaGrant":
-        grant.grant}``). The frontend sends the grants of every service on
-        the page in one ``POST /delivery/assets/resolve`` (header
-        ``X-Media-Grants``); each asset resolves only if a grant lists it.
-        Only list assets your own rules allow this user to see.
+        A backend passes it to ``client.delivery.resolve(ids,
+        grants=[...])`` (gRPC ``x-media-grants`` metadata) to resolve
+        another service's assets; each asset resolves only if a grant lists
+        it. Only list assets your own rules allow this user to see.
         """
         ids = list(asset_ids)
         if not ids:

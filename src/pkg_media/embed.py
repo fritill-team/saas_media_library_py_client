@@ -203,8 +203,8 @@ class MediaEmbedder:
         def _json(media):
             return media.to_json() if media is not None else None
 
-    ``client`` is a sync ``MediaClient`` calling as the service (gRPC or
-    HTTP); ``can_access(user, ids)`` is the service's rule, as for
+    ``client`` is a sync ``MediaClient`` calling as the service over gRPC
+    (delivery is gRPC only); ``can_access(user, ids)`` is the service's rule, as for
     ``AccessGate``. ``cache``: by default the embedder keeps its own
     ``AssetUrlCache``; pass one to share it, or ``False`` for none.
     ``thumbnails=False`` does not resolve denied ids (no teaser).

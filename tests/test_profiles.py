@@ -10,7 +10,6 @@ from pkg_media import (
     AssetKind,
     DeliveryAsset,
     ProcessingConfig,
-    ResourcePolicy,
     UploadProfile,
     UploadRejected,
     ValidationError,
@@ -353,28 +352,6 @@ def test_to_session_fields_keeps_explicit_transcription() -> None:
         "useFilenameAsAssetId": True,
         "enableTranscription": True,
     }
-
-
-def test_processing_config_copied_from_policy_keeps_its_values() -> None:
-    policy = ResourcePolicy.model_validate({
-        "id": str(uuid4()),
-        "tenantId": str(uuid4()),
-        "resourceType": "courses",
-        "collectionName": "video",
-        "fileConstraints": {"allowedMimeTypes": ["video/mp4"]},
-        "permissionRequirements": {},
-        "processingConfig": {"stepOptions": {"video_package": {"crf": 23}}, "enableTranscription": True},
-        "kind": "video",
-        "visibility": "restricted",
-        "isActive": True,
-        "version": 1,
-        "createdAt": "2026-05-08T00:00:00",
-        "updatedAt": "2026-05-08T00:00:00",
-    })
-
-    profile = UploadProfile(kind=policy.kind, processing_config=policy.processing_config)
-
-    assert profile.to_session_fields()["processingConfig"]["enableTranscription"] is True
 
 
 def test_processing_config_payload_accepts_mappings() -> None:

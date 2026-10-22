@@ -1,7 +1,8 @@
 """FastAPI routes for a service's browser users: the media resolve router
 (the app's ``can_access``, then links), media grants, and direct uploads.
 
-Every route works with a ``MediaClient`` on either transport (HTTP or gRPC).
+The media router needs a gRPC ``MediaClient`` (delivery is gRPC only); the
+grant and upload routers work on either transport.
 Needs the ``fastapi`` extra: ``pip install "pkg-media[fastapi]"``.
 """
 
@@ -33,7 +34,7 @@ from pkg_media.service_uploads import ClaimedUpload, UploadRecord, UploadSession
 
 logger = logging.getLogger(__name__)
 
-# Same limit as the server's POST /delivery/assets/resolve.
+# Same limit as media's ResolveDeliveryAssets (ids per call).
 MAX_RESOLVE_IDS = 100
 
 
@@ -60,17 +61,17 @@ def create_media_router(
     - ``POST {prefix}/resolve`` with ``{"assetIds": [...]}`` (1 to 100 ids):
       ``can_access(user, ids)`` (the app's rule, one call for all ids), then
       the allowed ids are resolved through ``client`` (``client.delivery``,
-      batches of 100). Answers the shape of media's
-      ``POST /delivery/assets/resolve``: ``{"items": [{"assetId", "status",
+      batches of 100). Answers media's resolve shape:
+      ``{"items": [{"assetId", "status",
       "thumbnailUrl", "asset", "error"}], "total"}``, one item per id in
       order. Every id failing ``can_access`` is ``forbidden`` (even one that
       does not exist), with at most a public ``thumbnailUrl``.
-    - ``GET {prefix}/{asset_id}``: the asset, as ``GET /delivery/assets/{id}``.
+    - ``GET {prefix}/{asset_id}``: the asset, as a ``DeliveryAsset``.
       403 with ``{"detail", "thumbnailUrl"}`` when denied, 404 when not found,
       502 when the media library could not produce a link.
 
-    ``client`` is a sync ``MediaClient`` calling as the app's service (HTTP
-    or gRPC). ``get_current_user`` is the app's FastAPI dependency; whatever
+    ``client`` is a sync ``MediaClient`` calling as the app's service over
+    gRPC. ``get_current_user`` is the app's FastAPI dependency; whatever
     it returns is passed to ``can_access``, which returns the allowed ids
     (or a ``{id: allowed}`` mapping). ``cache`` (an ``AssetUrlCache``)
     shares links between users. With ``thumbnails=False`` denied ids are not

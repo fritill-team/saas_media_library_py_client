@@ -1,7 +1,7 @@
 """Shared HTTP helpers for API submodules.
 
 Lives in its own module to avoid circular imports between client.py and the
-per-API modules (assets, resource_policies, asset_access) that all need
+per-API modules (assets, asset_access) that all need
 ``raise_for_status``.
 """
 

@@ -2,27 +2,24 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Dict, List
 from uuid import UUID, uuid4
 
+import grpc
 import httpx
 import pytest
-import respx
 
 from pkg_media import (
     AccessGate,
     AssetUrlCache,
     AuthenticationError,
     DeliveryBatchResolveResult,
-    MediaLibraryClient,
     MediaLibraryError,
     ResolveStatus,
 )
+from tests import delivery_fake
 
 
-BASE_URL = "https://media.test"
 TENANT_ID = str(uuid4())
-RESOLVE_URL = f"{BASE_URL}/v1/delivery/assets/resolve"
 
 THUMB_RENDITION_URL = "https://cdn.test/{id}/thumb-256.webp"
 ITEM_THUMB_URL = "https://cdn.test/{id}/thumb.webp"
@@ -36,10 +33,6 @@ SECRET_URLS = (
     "https://stream.test/s/stoken/{id}/master.m3u8",
     "https://stream.test/s/stoken/{id}/manifest.mpd",
 )
-
-
-def _make_client() -> MediaLibraryClient:
-    return MediaLibraryClient(base_url=BASE_URL, tenant_id=TENANT_ID, token="service-token")
 
 
 def _asset_json(asset_id, *, thumbnail: bool = True) -> dict:
@@ -121,28 +114,10 @@ def _ok_item(asset_id, **kwargs) -> dict:
     }
 
 
-class FakeServer:
-    """Answers POST /delivery/assets/resolve from a per-id table (default: ok)."""
-
-    def __init__(self) -> None:
-        self.items: Dict[str, dict] = {}
-        self.requests: List[List[str]] = []
-
-    def set(self, asset_id, item: dict) -> None:
-        self.items[str(asset_id)] = item
-
-    def __call__(self, request: httpx.Request) -> httpx.Response:
-        ids = json.loads(request.content)["assetIds"]
-        self.requests.append(ids)
-        items = [self.items.get(aid) or _ok_item(aid) for aid in ids]
-        return httpx.Response(200, json={"items": items, "total": len(items)})
-
-
 @pytest.fixture
 def server():
-    fake = FakeServer()
-    with respx.mock(assert_all_called=False) as mock:
-        mock.post(RESOLVE_URL).mock(side_effect=fake)
+    """The media library's gRPC Delivery (default: ``ok`` for every id)."""
+    with delivery_fake.serve(_ok_item) as fake:
         yield fake
 
 
@@ -169,7 +144,7 @@ def _assert_no_secret_urls(asset_id, data) -> None:
 
 def test_allowed_asset_gets_the_service_result(server) -> None:
     asset_id = uuid4()
-    gate = AccessGate(_make_client(), Recorder([asset_id]))
+    gate = AccessGate(server.client(tenant_id=TENANT_ID), Recorder([asset_id]))
 
     [result] = gate.resolve("alice", [asset_id])
 
@@ -180,7 +155,7 @@ def test_allowed_asset_gets_the_service_result(server) -> None:
 
 def test_denied_asset_is_forbidden_with_only_a_thumbnail(server) -> None:
     asset_id = uuid4()
-    gate = AccessGate(_make_client(), Recorder())
+    gate = AccessGate(server.client(tenant_id=TENANT_ID), Recorder())
 
     [result] = gate.resolve("mallory", [asset_id])
 
@@ -195,7 +170,7 @@ def test_denied_asset_is_forbidden_with_only_a_thumbnail(server) -> None:
 def test_denied_asset_without_thumbnail_rendition_uses_item_thumbnail(server) -> None:
     asset_id = uuid4()
     server.set(asset_id, _ok_item(asset_id, thumbnail=False))
-    gate = AccessGate(_make_client(), Recorder())
+    gate = AccessGate(server.client(tenant_id=TENANT_ID), Recorder())
 
     [result] = gate.resolve("mallory", [asset_id])
 
@@ -208,7 +183,7 @@ def test_denied_asset_without_any_thumbnail(server) -> None:
     item = _ok_item(asset_id, thumbnail=False)
     item["thumbnailUrl"] = None
     server.set(asset_id, item)
-    gate = AccessGate(_make_client(), Recorder())
+    gate = AccessGate(server.client(tenant_id=TENANT_ID), Recorder())
 
     [result] = gate.resolve("mallory", [asset_id])
 
@@ -221,7 +196,7 @@ def test_denied_result_from_cache_never_leaks(server) -> None:
     asset_id = uuid4()
     cache = AssetUrlCache()
     can_access = Recorder([asset_id])
-    gate = AccessGate(_make_client(), can_access, cache=cache)
+    gate = AccessGate(server.client(tenant_id=TENANT_ID), can_access, cache=cache)
     gate.resolve("alice", [asset_id])  # warms the cache with the full result
 
     can_access.allowed.clear()
@@ -240,7 +215,7 @@ def test_denied_asset_never_leaks_whatever_the_service_says(server, status) -> N
     item = _ok_item(asset_id)
     item["status"] = status  # even with an asset attached
     server.set(asset_id, item)
-    gate = AccessGate(_make_client(), Recorder())
+    gate = AccessGate(server.client(tenant_id=TENANT_ID), Recorder())
 
     [result] = gate.resolve("mallory", [asset_id])
 
@@ -256,7 +231,7 @@ def test_denied_asset_never_leaks_whatever_the_service_says(server, status) -> N
 def test_not_found_passes_through(server, allowed) -> None:
     asset_id = uuid4()
     server.set(asset_id, {"assetId": str(asset_id), "status": "not_found"})
-    gate = AccessGate(_make_client(), Recorder([asset_id] if allowed else []))
+    gate = AccessGate(server.client(tenant_id=TENANT_ID), Recorder([asset_id] if allowed else []))
 
     [result] = gate.resolve("u", [asset_id])
 
@@ -269,7 +244,7 @@ def test_error_passes_through_for_allowed_asset(server) -> None:
     server.set(asset_id, {"assetId": str(asset_id), "status": "error",
                           "thumbnailUrl": ITEM_THUMB_URL.format(id=asset_id),
                           "error": "Blob not found for asset"})
-    gate = AccessGate(_make_client(), Recorder([asset_id]))
+    gate = AccessGate(server.client(tenant_id=TENANT_ID), Recorder([asset_id]))
 
     [result] = gate.resolve("u", [asset_id])
 
@@ -283,7 +258,7 @@ def test_error_for_denied_asset_is_forbidden(server) -> None:
     server.set(asset_id, {"assetId": str(asset_id), "status": "error",
                           "thumbnailUrl": ITEM_THUMB_URL.format(id=asset_id),
                           "error": "Blob not found for asset"})
-    gate = AccessGate(_make_client(), Recorder())
+    gate = AccessGate(server.client(tenant_id=TENANT_ID), Recorder())
 
     [result] = gate.resolve("u", [asset_id])
 
@@ -297,7 +272,7 @@ def test_service_forbidden_for_allowed_asset_warns_about_token(server, caplog) -
     server.set(asset_id, {"assetId": str(asset_id), "status": "forbidden",
                           "thumbnailUrl": ITEM_THUMB_URL.format(id=asset_id),
                           "error": "RESTRICTED asset is only available through the owning application"})
-    gate = AccessGate(_make_client(), Recorder([asset_id]))
+    gate = AccessGate(server.client(tenant_id=TENANT_ID), Recorder([asset_id]))
 
     with caplog.at_level(logging.WARNING, logger="pkg_media.gate"):
         [result] = gate.resolve("u", [asset_id])
@@ -307,11 +282,10 @@ def test_service_forbidden_for_allowed_asset_warns_about_token(server, caplog) -
     assert "service token" in caplog.text
 
 
-def test_missing_item_in_server_response_becomes_error() -> None:
+def test_missing_item_in_server_response_becomes_error(server) -> None:
     asset_id = uuid4()
-    with respx.mock:
-        respx.post(RESOLVE_URL).mock(return_value=httpx.Response(200, json={"items": [], "total": 0}))
-        [result] = AccessGate(_make_client(), Recorder([asset_id])).resolve("u", [asset_id])
+    server.set(asset_id, None)
+    [result] = AccessGate(server.client(tenant_id=TENANT_ID), Recorder([asset_id])).resolve("u", [asset_id])
 
     assert result.status == ResolveStatus.ERROR
     assert result.asset_id == asset_id
@@ -324,7 +298,7 @@ def test_results_keep_input_order_with_duplicates(server) -> None:
     ok_id, denied_id, missing_id = uuid4(), uuid4(), uuid4()
     server.set(missing_id, {"assetId": str(missing_id), "status": "not_found"})
     can_access = Recorder([ok_id])
-    gate = AccessGate(_make_client(), can_access)
+    gate = AccessGate(server.client(tenant_id=TENANT_ID), can_access)
     requested = [denied_id, ok_id, str(missing_id), ok_id, denied_id]
 
     results = gate.resolve("alice", requested)
@@ -338,7 +312,7 @@ def test_results_keep_input_order_with_duplicates(server) -> None:
 
 def test_can_access_may_return_strings_and_ignored_extra_ids(server) -> None:
     a, b = uuid4(), uuid4()
-    gate = AccessGate(_make_client(), lambda user, ids: {str(a), str(uuid4())})
+    gate = AccessGate(server.client(tenant_id=TENANT_ID), lambda user, ids: {str(a), str(uuid4())})
 
     results = gate.resolve("u", [a, b])
 
@@ -347,7 +321,7 @@ def test_can_access_may_return_strings_and_ignored_extra_ids(server) -> None:
 
 def test_can_access_generator_is_accepted(server) -> None:
     a = uuid4()
-    gate = AccessGate(_make_client(), lambda user, ids: (i for i in ids))
+    gate = AccessGate(server.client(tenant_id=TENANT_ID), lambda user, ids: (i for i in ids))
 
     assert gate.resolve("u", [a])[0].status == ResolveStatus.OK
 
@@ -355,7 +329,7 @@ def test_can_access_generator_is_accepted(server) -> None:
 def test_can_access_mapping_allows_only_truthy_values(server) -> None:
     ids = [uuid4() for _ in range(5)]
     verdicts = dict(zip(ids, [True, False, 0, None, 1]))
-    gate = AccessGate(_make_client(), lambda user, asset_ids: verdicts)
+    gate = AccessGate(server.client(tenant_id=TENANT_ID), lambda user, asset_ids: verdicts)
 
     results = gate.resolve("u", ids)
 
@@ -367,7 +341,7 @@ def test_can_access_mapping_allows_only_truthy_values(server) -> None:
 
 def test_can_access_mapping_of_denials_fails_closed(server) -> None:
     asset_id = uuid4()
-    gate = AccessGate(_make_client(), lambda user, ids: {str(i): False for i in ids})
+    gate = AccessGate(server.client(tenant_id=TENANT_ID), lambda user, ids: {str(i): False for i in ids})
 
     result = gate.resolve_one("mallory", asset_id)
 
@@ -377,7 +351,7 @@ def test_can_access_mapping_of_denials_fails_closed(server) -> None:
 
 @pytest.mark.parametrize("bad", [None, True, False, "not-a-list", b"bytes"])
 def test_can_access_must_return_ids(server, bad) -> None:
-    gate = AccessGate(_make_client(), lambda user, ids: bad)
+    gate = AccessGate(server.client(tenant_id=TENANT_ID), lambda user, ids: bad)
 
     with pytest.raises(TypeError, match="can_access"):
         gate.resolve("u", [uuid4()])
@@ -387,7 +361,7 @@ def test_can_access_must_return_ids(server, bad) -> None:
 
 def test_empty_input_calls_nothing(server) -> None:
     can_access = Recorder()
-    gate = AccessGate(_make_client(), can_access)
+    gate = AccessGate(server.client(tenant_id=TENANT_ID), can_access)
 
     assert gate.resolve("u", []) == []
     assert can_access.calls == [] and server.requests == []
@@ -395,12 +369,12 @@ def test_empty_input_calls_nothing(server) -> None:
 
 def test_invalid_id_raises_value_error(server) -> None:
     with pytest.raises(ValueError):
-        AccessGate(_make_client(), Recorder()).resolve("u", ["not-a-uuid"])
+        AccessGate(server.client(tenant_id=TENANT_ID), Recorder()).resolve("u", ["not-a-uuid"])
 
 
 def test_resolve_one(server) -> None:
     asset_id = uuid4()
-    gate = AccessGate(_make_client(), Recorder([asset_id]))
+    gate = AccessGate(server.client(tenant_id=TENANT_ID), Recorder([asset_id]))
 
     result = gate.resolve_one("u", str(asset_id))
 
@@ -410,7 +384,7 @@ def test_resolve_one(server) -> None:
 
 def test_more_than_one_server_batch(server) -> None:
     ids = [uuid4() for _ in range(150)]
-    gate = AccessGate(_make_client(), Recorder(ids[::2]))
+    gate = AccessGate(server.client(tenant_id=TENANT_ID), Recorder(ids[::2]))
 
     results = gate.resolve("u", ids)
 
@@ -419,31 +393,21 @@ def test_more_than_one_server_batch(server) -> None:
     assert [r.status for r in results[:4]] == ["ok", "forbidden", "ok", "forbidden"]
 
 
-def test_media_library_errors_propagate() -> None:
-    with respx.mock:
-        respx.post(RESOLVE_URL).mock(return_value=httpx.Response(401, json={"detail": "expired"}))
-        gate = AccessGate(_make_client(), Recorder())
-        with pytest.raises(AuthenticationError):
-            gate.resolve("u", [uuid4()])
+def test_media_library_errors_propagate(server) -> None:
+    server.fail(grpc.StatusCode.UNAUTHENTICATED)
+    gate = AccessGate(server.client(tenant_id=TENANT_ID), Recorder())
+    with pytest.raises(AuthenticationError):
+        gate.resolve("u", [uuid4()])
 
 
-@pytest.mark.parametrize(
-    "mock",
-    [
-        {"side_effect": httpx.ConnectError("refused")},
-        {"return_value": httpx.Response(200, text="<html>Bad gateway</html>")},
-        {"return_value": httpx.Response(200, json={"unexpected": True})},
-    ],
-    ids=["transport", "not-json", "no-items"],
-)
-def test_transport_and_decode_failures_raise_media_library_error(mock) -> None:
-    with respx.mock:
-        respx.post(RESOLVE_URL).mock(**mock)
-        gate = AccessGate(_make_client(), Recorder())
-        with pytest.raises(MediaLibraryError) as info:
-            gate.resolve("u", [uuid4()])
+@pytest.mark.parametrize("status", [grpc.StatusCode.UNAVAILABLE, grpc.StatusCode.INTERNAL])
+def test_transport_failures_raise_media_library_error(server, status) -> None:
+    server.fail(status)
+    gate = AccessGate(server.client(tenant_id=TENANT_ID), Recorder())
+    with pytest.raises(MediaLibraryError) as info:
+        gate.resolve("u", [uuid4()])
 
-    assert info.value.__cause__ is not None
+    assert info.value.grpc_status == status
 
 
 @pytest.mark.parametrize(
@@ -456,7 +420,7 @@ def test_can_access_errors_propagate_unchanged(server, error) -> None:
         raise error
 
     with pytest.raises(type(error)) as info:
-        AccessGate(_make_client(), can_access).resolve("u", [uuid4()])
+        AccessGate(server.client(tenant_id=TENANT_ID), can_access).resolve("u", [uuid4()])
 
     assert info.value is error
     assert not isinstance(info.value, MediaLibraryError)
@@ -467,7 +431,7 @@ def test_can_access_errors_propagate_unchanged(server, error) -> None:
 
 def test_cache_serves_every_entitled_user(server) -> None:
     a, b = uuid4(), uuid4()
-    gate = AccessGate(_make_client(), Recorder([a, b]), cache=AssetUrlCache())
+    gate = AccessGate(server.client(tenant_id=TENANT_ID), Recorder([a, b]), cache=AssetUrlCache())
 
     first = gate.resolve("alice", [a, b])
     second = gate.resolve("bob", [b, a])
@@ -479,7 +443,7 @@ def test_cache_serves_every_entitled_user(server) -> None:
 
 def test_cache_only_requests_missing_ids(server) -> None:
     a, b = uuid4(), uuid4()
-    gate = AccessGate(_make_client(), Recorder([a, b]), cache=AssetUrlCache())
+    gate = AccessGate(server.client(tenant_id=TENANT_ID), Recorder([a, b]), cache=AssetUrlCache())
     gate.resolve("alice", [a])
 
     gate.resolve("alice", [a, b])
@@ -490,7 +454,7 @@ def test_cache_only_requests_missing_ids(server) -> None:
 def test_uncacheable_results_are_requested_again(server) -> None:
     missing = uuid4()
     server.set(missing, {"assetId": str(missing), "status": "not_found"})
-    gate = AccessGate(_make_client(), Recorder([missing]), cache=AssetUrlCache())
+    gate = AccessGate(server.client(tenant_id=TENANT_ID), Recorder([missing]), cache=AssetUrlCache())
 
     gate.resolve("u", [missing])
     gate.resolve("u", [missing])
@@ -501,7 +465,7 @@ def test_uncacheable_results_are_requested_again(server) -> None:
 def test_cached_result_reports_remaining_expiry(server) -> None:
     clock = [0.0]
     asset_id = uuid4()
-    gate = AccessGate(_make_client(), Recorder([asset_id]),
+    gate = AccessGate(server.client(tenant_id=TENANT_ID), Recorder([asset_id]),
                       cache=AssetUrlCache(clock=lambda: clock[0]))
     gate.resolve("alice", [asset_id])
 
@@ -518,7 +482,7 @@ def test_assets_still_processing_are_not_cached(server) -> None:
     item = _ok_item(asset_id)
     item["asset"]["status"] = "processing"
     server.set(asset_id, item)
-    gate = AccessGate(_make_client(), Recorder([asset_id]), cache=AssetUrlCache())
+    gate = AccessGate(server.client(tenant_id=TENANT_ID), Recorder([asset_id]), cache=AssetUrlCache())
 
     gate.resolve("alice", [asset_id])
     server.set(asset_id, _ok_item(asset_id))  # processing finished
@@ -529,45 +493,34 @@ def test_assets_still_processing_are_not_cached(server) -> None:
     assert len(server.requests) == 2  # the ready result is cached
 
 
-class TenantServer:
-    """POST /delivery/assets/resolve that answers per service token (no
-    X-Tenant is sent): each tenant's token only finds its own assets."""
-
-    def __init__(self, assets_by_tenant: Dict[str, set]) -> None:
-        self.assets_by_tenant = assets_by_tenant
-        self.requests: List[tuple] = []
-
-    def __call__(self, request: httpx.Request) -> httpx.Response:
-        assert "X-Tenant" not in request.headers
-        tenant = request.headers["Authorization"].replace("Bearer service-", "tenant-")
-        ids = json.loads(request.content)["assetIds"]
-        self.requests.append((tenant, ids))
-        items = [
-            _ok_item(aid) if aid in self.assets_by_tenant.get(tenant, set())
-            else {"assetId": aid, "status": "not_found"}
-            for aid in ids
-        ]
-        return httpx.Response(200, json={"items": items, "total": len(items)})
-
-
 @pytest.mark.parametrize("allowed", [True, False])
 def test_shared_cache_never_serves_another_tenants_result(allowed) -> None:
+    """Media answers per service credential: each tenant's only finds its own assets."""
     asset_id = uuid4()
-    fake = TenantServer({"tenant-b": {str(asset_id)}})
-    cache = AssetUrlCache()
-    client_a = MediaLibraryClient(base_url=BASE_URL, tenant_id="tenant-a", token="service-a")
-    client_b = MediaLibraryClient(base_url=BASE_URL, tenant_id="tenant-b", token="service-b")
-    # Tenant A's can_access is tenant-agnostic (e.g. a lookup by asset id).
-    gate_a = AccessGate(client_a, Recorder([asset_id] if allowed else []), cache=cache)
-    gate_b = AccessGate(client_b, Recorder([asset_id]), cache=cache)
+    assets_by_tenant = {"tenant-b": {str(asset_id)}}
+    requests = []
 
-    with respx.mock:
-        respx.post(RESOLVE_URL).mock(side_effect=fake)
+    def answer(aid):
+        tenant = fake.metadata[-1]["authorization"].replace("Bearer service-", "tenant-")
+        requests.append((tenant, aid))
+        if aid in assets_by_tenant.get(tenant, set()):
+            return _ok_item(aid)
+        return {"assetId": aid, "status": "not_found"}
+
+    with delivery_fake.serve(answer) as fake:
+        cache = AssetUrlCache()
+        client_a = fake.client(tenant_id="tenant-a", token="service-a")
+        client_b = fake.client(tenant_id="tenant-b", token="service-b")
+        # Tenant A's can_access is tenant-agnostic (e.g. a lookup by asset id).
+        gate_a = AccessGate(client_a, Recorder([asset_id] if allowed else []), cache=cache)
+        gate_b = AccessGate(client_b, Recorder([asset_id]), cache=cache)
+
         assert gate_b.resolve_one("bob", asset_id).status == ResolveStatus.OK
         [result] = gate_a.resolve("mallory", [asset_id])
 
-    # Tenant A's service token was asked, and the asset is not A's.
-    assert fake.requests == [("tenant-b", [str(asset_id)]), ("tenant-a", [str(asset_id)])]
+    # Tenant A's credential was asked, and the asset is not A's.
+    assert requests == [("tenant-b", str(asset_id)), ("tenant-a", str(asset_id))]
+    assert all("x-tenant" not in m for m in fake.metadata)
     assert result.status == ResolveStatus.NOT_FOUND
     assert result.asset is None and result.thumbnail_url is None
     _assert_no_secret_urls(asset_id, gate_a.to_payload([result]))
@@ -589,7 +542,7 @@ def test_to_payload_matches_server_response_exactly(server) -> None:
     ]
     for item in body_items:
         server.set(item["assetId"], item)
-    gate = AccessGate(_make_client(), Recorder([ok_id, missing_id, broken_id]))
+    gate = AccessGate(server.client(tenant_id=TENANT_ID), Recorder([ok_id, missing_id, broken_id]))
 
     payload = gate.to_payload(gate.resolve("u", [ok_id, missing_id, broken_id]))
 
@@ -599,7 +552,7 @@ def test_to_payload_matches_server_response_exactly(server) -> None:
 
 def test_to_payload_for_denied_item(server) -> None:
     asset_id = uuid4()
-    gate = AccessGate(_make_client(), Recorder())
+    gate = AccessGate(server.client(tenant_id=TENANT_ID), Recorder())
 
     payload = gate.to_payload(gate.resolve("u", [asset_id]))
 

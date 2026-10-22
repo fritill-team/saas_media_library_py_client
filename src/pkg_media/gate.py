@@ -56,8 +56,9 @@ class AccessGate:
         gate = AccessGate(service_client, can_access, cache=AssetUrlCache())
         results = gate.resolve(current_user, asset_ids)
 
-    ``client`` is a sync ``MediaClient`` (HTTP or gRPC transport) calling as
-    the app's **service** (Keycloak client credentials or a service token):
+    ``client`` is a sync ``MediaClient`` with ``transport="grpc"`` (delivery
+    is gRPC only) calling as the app's **service** (Keycloak client
+    credentials):
     only a service gets links for RESTRICTED assets. Otherwise the media
     library answers ``forbidden`` for them (a warning is logged).
 
@@ -76,9 +77,10 @@ class AccessGate:
     ``resolve_denied=False`` sends only the allowed ids to the media
     library: denied ids come back ``forbidden`` without a thumbnail.
 
-    ``to_payload`` turns the results into the exact JSON of
-    ``POST /delivery/assets/resolve``, so a frontend only changes its base
-    URL. The gate is thread-safe when ``can_access`` is.
+    ``to_payload`` turns the results into the JSON media's resolve answered
+    (``{"items": [...], "total"}``, camelCase), the shape the media router
+    and the nuxt module's ``backends.<name>.resolve`` use. The gate is
+    thread-safe when ``can_access`` is.
 
     Every failure of the media library call raises ``MediaLibraryError``:
     error responses as their usual subclass, transport errors and malformed
@@ -165,7 +167,7 @@ class AccessGate:
 
     @staticmethod
     def to_payload(results: Iterable[DeliveryBatchResolveResult]) -> Dict[str, Any]:
-        """JSON body of ``POST /delivery/assets/resolve`` for ``results``.
+        """The resolve JSON (as the media router answers) for ``results``.
 
         ``{"items": [{"assetId", "status", "thumbnailUrl", "asset", "error"}],
         "total"}`` with the server's camelCase keys, nulls included.

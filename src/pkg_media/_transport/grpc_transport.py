@@ -138,8 +138,6 @@ class GrpcTransport:
     # ── Assets ─────────────────────────────────────────────────────────
 
     async def list_assets(self, params: Dict[str, Any]) -> PaginatedAssets:
-        if params.get("resourcePolicyId") is not None:
-            raise ValueError("resource_policy_id (resource policies are deprecated) is HTTP-only")
         resp = await self._call(methods.Assets.LIST_ASSETS, assets_pb2.ListAssetsRequest(**_list_fields(params)))
         return _model(PaginatedAssets, resp)
 

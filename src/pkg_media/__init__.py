@@ -13,12 +13,6 @@ from pkg_media.embed import (
     MediaEmbedder,
 )
 from pkg_media.grants import GrantScope, GrantsAPI, MediaGrant, grant_profile_payload
-from pkg_media.migration import (
-    find_profile,
-    policy_key,
-    profiles_from_policies,
-    render_profiles_module,
-)
 from pkg_media.permalinks import (
     Permalink,
     PermalinksAPI,
@@ -41,10 +35,7 @@ from pkg_media.models import (
     ResolveStatus,
     DownloadType,
     Visibility,
-    FileConstraints,
-    PermissionRequirements,
     ProcessingConfig,
-    ResourcePolicy,
     Asset,
     AssetAccessGrant,
     Rendition,
@@ -115,19 +106,12 @@ __all__ = [
     "UploadSessionStore",
     "claim_upload",
     "thumbnail_url",
-    "find_profile",
-    "policy_key",
-    "profiles_from_policies",
-    "render_profiles_module",
     "AssetKind",
     "AssetStatus",
     "ResolveStatus",
     "DownloadType",
     "Visibility",
-    "FileConstraints",
-    "PermissionRequirements",
     "ProcessingConfig",
-    "ResourcePolicy",
     "Asset",
     "AssetAccessGrant",
     "Rendition",

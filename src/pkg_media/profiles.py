@@ -1,12 +1,12 @@
 """Upload rules defined in the consuming app's code.
 
-``UploadProfile`` replaces a resource policy (being retired, see the server's
-docs/resource-policy/retirement.md). The server no longer checks MIME types,
-sizes or permissions for policy-less uploads; the app does, with the same
-rules the server's ``ResourcePolicy.validate_file`` / ``check_permission``
-applied. One difference: MIME types are normalized (parameters and
-whitespace dropped, lowercased) before they are compared and before they are
-sent, so the server stores the canonical type its processors match on.
+``UploadProfile`` replaced resource policies (retired, see the server's
+docs/resource-policy/retirement.md). The server does not check MIME types,
+sizes or permissions of uploads; the app does, with the rules the server's
+resource policies used to apply. One difference: MIME types are normalized
+(parameters and whitespace dropped, lowercased) before they are compared and
+before they are sent, so the server stores the canonical type its processors
+match on.
 """
 
 from __future__ import annotations
@@ -123,7 +123,7 @@ class UploadProfile(BaseModel):
     def validate_file(self, mime_type: str, size_bytes: Optional[int] = None) -> None:
         """Check a file before uploading it.
 
-        Mirrors the server's resource-policy check: ``size_bytes`` is
+        As the server's old resource-policy check: ``size_bytes`` is
         required when the profile sets a min or max size. ``mime_type`` must
         be ``type/subtype`` (parameters are ignored), whatever the profile
         allows.
@@ -150,7 +150,7 @@ class UploadProfile(BaseModel):
     ) -> bool:
         """Whether a user with ``permissions`` may upload with this profile.
 
-        Same order as the server's ``ResourcePolicy.check_permission``:
+        Same order as the server's old resource-policy permission check:
 
         1. ``allow_anonymous`` → allowed.
         2. No ``required_permissions`` → allowed, even when unauthenticated.

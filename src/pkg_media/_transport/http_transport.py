@@ -1,21 +1,21 @@
-"""The HTTP transport: media's REST API through an ``httpx.AsyncClient``."""
+"""The HTTP transport: media's REST API through an ``httpx.AsyncClient``.
+
+No delivery: media removed HTTP ``/delivery`` (``client.delivery`` is gRPC
+only).
+"""
 
 from __future__ import annotations
 
 from typing import Any, Awaitable, Callable, Dict, Generator, List, Optional, Tuple
 
 import httpx
-from pydantic import BaseModel
 
 from pkg_media._http import raise_for_status
 from pkg_media.grants import MediaGrant
 from pkg_media.models import (
     Asset,
     BatchResolveResult,
-    DeliveryAsset,
-    DeliveryBatchResolveResult,
     PaginatedAssets,
-    PaginatedDeliveryAssets,
     UploadAbortResult,
     UploadFinalizeResult,
     UploadPartResult,
@@ -27,25 +27,16 @@ from pkg_media.permalinks import Permalink
 TokenSource = Callable[[], Awaitable[str]]
 
 ASSETS = "/v1/manage/assets"
-DELIVERY = "/v1/delivery/assets"
 UPLOADS = "/v1/manage/uploads/sessions"
 GRANTS = "/v1/manage/grants"
 PERMALINKS = "/v1/manage/permalinks"
 PROCESSING = "/v1/manage/processing-options"
-GRANTS_HEADER = "X-Media-Grants"
-
-
-class _ResolveResponse(BaseModel):
-    """Body of ``POST /delivery/assets/resolve``; a body without ``items``
-    fails validation instead of raising ``KeyError``."""
-
-    items: List[DeliveryBatchResolveResult]
 
 
 class BearerAuth(httpx.Auth):
     """``Authorization: Bearer <token>`` from a token source, per request.
 
-    ``sync_token`` serves sync clients (the deprecated policy and access APIs).
+    ``sync_token`` serves sync clients (the deprecated access API).
     """
 
     def __init__(self, token: TokenSource, sync_token: Optional[Callable[[], str]] = None):
@@ -108,21 +99,6 @@ class HttpTransport:
     async def activate_deploy(self, asset_id: str, deploy_id: str) -> WebAppDeployList:
         data = await self._json("POST", f"{ASSETS}/{asset_id}/deploys/{deploy_id}/activate")
         return WebAppDeployList.model_validate(data)
-
-    # ── Delivery ───────────────────────────────────────────────────────
-
-    async def list_delivery_assets(self, params: Dict[str, Any]) -> PaginatedDeliveryAssets:
-        return PaginatedDeliveryAssets.model_validate(await self._json("GET", DELIVERY, params=params))
-
-    async def get_delivery_asset(self, asset_id: str, grants: List[str]) -> DeliveryAsset:
-        data = await self._json("GET", f"{DELIVERY}/{asset_id}", headers=_grant_headers(grants))
-        return DeliveryAsset.model_validate(data)
-
-    async def resolve_delivery_assets(self, asset_ids: List[str], grants: List[str]) -> List[DeliveryBatchResolveResult]:
-        data = await self._json(
-            "POST", f"{DELIVERY}/resolve", json={"assetIds": asset_ids}, headers=_grant_headers(grants) or None
-        )
-        return _ResolveResponse.model_validate(data).items
 
     # ── Uploads ────────────────────────────────────────────────────────
 
@@ -198,8 +174,3 @@ class HttpTransport:
 
     async def _json(self, method: str, url: str, **kwargs: Any) -> Any:
         return (await self._send(method, url, **kwargs)).json()
-
-
-def _grant_headers(grants: List[str]) -> Dict[str, str]:
-    return {GRANTS_HEADER: ", ".join(grants)} if grants else {}
-

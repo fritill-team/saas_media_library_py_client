@@ -43,12 +43,11 @@ class AssetsAPI:
         kind: Optional[AssetKind | str] = None,
         status: Optional[AssetStatus | str] = None,
         query: Optional[str] = None,
-        resource_policy_id: Optional[str] = None,
         page: int = 1,
         page_size: int = 10,
     ) -> PaginatedAssets:
         """List assets with full details (admin)."""
-        params = self._build_list_params(kind, status, query, page, page_size, resource_policy_id=resource_policy_id)
+        params = self._build_list_params(kind, status, query, page, page_size)
         return await self._transport.list_assets(params)
 
     async def get(self, asset_id: UUID | str) -> Asset:
@@ -162,7 +161,6 @@ class AssetsAPI:
         query: Optional[str],
         page: int,
         page_size: int,
-        resource_policy_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         params: Dict[str, Any] = {"page": page, "pageSize": page_size}
         if kind is not None:
@@ -171,6 +169,4 @@ class AssetsAPI:
             params["status"] = str(status)
         if query is not None:
             params["query"] = query
-        if resource_policy_id is not None:
-            params["resourcePolicyId"] = str(resource_policy_id)
         return params

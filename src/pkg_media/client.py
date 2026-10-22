@@ -15,7 +15,6 @@ from pkg_media.exceptions import MediaLibraryError
 from pkg_media.grants import GrantsAPI
 from pkg_media.permalinks import PermalinksAPI
 from pkg_media.processing_options import ProcessingOptionsAPI
-from pkg_media.resource_policies import ResourcePoliciesAPI
 from pkg_media.uploads import UploadsAPI
 
 if TYPE_CHECKING:
@@ -29,7 +28,8 @@ Transport = Literal["http", "grpc"]
 class AsyncMediaClient:
     """Async client for the media library, over HTTP or gRPC.
 
-    The same methods on both transports::
+    The same methods on both transports, except ``client.delivery`` (gRPC
+    only: media removed HTTP ``/delivery``) and file bytes (HTTP only)::
 
         # gRPC, as a Keycloak client of the Itqadem realm (audience media-api)
         client = AsyncMediaClient(
@@ -186,9 +186,8 @@ class MediaClient:
     Close it (or use it as a context manager) to stop that thread. In async
     code, use ``AsyncMediaClient`` instead.
 
-    ``client.policies`` and ``client.access`` (deprecated) are HTTP-only and
-    warn on every call; use ``UploadProfile`` with ``client.uploads``, and
-    ``AccessGate``, instead.
+    ``client.access`` (deprecated) is HTTP-only and warns on every call;
+    use ``AccessGate`` instead.
     """
 
     def __init__(self, transport: Transport = "http", **kwargs: Any):
@@ -215,11 +214,6 @@ class MediaClient:
     def tenant_id(self) -> Optional[str]:
         """Scopes ``AssetUrlCache`` entries; never sent to the server."""
         return self.aio.tenant_id
-
-    @property
-    def policies(self) -> ResourcePoliciesAPI:
-        """Deprecated resource policies (HTTP only)."""
-        return ResourcePoliciesAPI(self._deprecated_http("policies"))
 
     @property
     def access(self) -> AssetAccessAPI:
