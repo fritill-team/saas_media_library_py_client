@@ -71,7 +71,8 @@ class EmbeddedMedia(BaseModel):
       image's thumbnail rendition); also set for a denied user, as a locked
       teaser.
     - ``streams``: HLS/DASH links of a video or audio, when it has a stream.
-    - ``sources``: the image's sizes, smallest first, for ``srcset``.
+    - ``sources``: the sizes of ``poster`` (an image's thumbnails, a video's
+      stills), smallest first, for ``srcset``; also set for a denied user.
     - ``width`` / ``height``: the largest size media has for the asset (its
       aspect ratio, to reserve space); None when unknown.
     - ``alt``: never set by media; the service fills it from its own data.
@@ -133,11 +134,14 @@ class EmbeddedMedia(BaseModel):
             if found:
                 thumbnail = result.thumbnail_url
                 links.append((thumbnail, expires_in))
+        # The teaser's sizes: the same still, from the service's own view.
+        sources = _poster_sources(_thumbnail_rendition(known), links) if thumbnail else []
         kind = _kind(known) if known is not None else "other"
         return cls(
             asset_id=result.asset_id,
             kind=kind,
             poster=thumbnail,
+            sources=sources,
             **_expiry_fields(links),
         )
 
@@ -280,14 +284,7 @@ def _from_asset(asset_id: UUID, asset: DeliveryAsset) -> EmbeddedMedia:
         streams = EmbeddedMediaStreams(hls=asset.hls_url, dash=asset.dash_url)
         links.extend((u, asset.stream_url_expires_in) for u in (asset.hls_url, asset.dash_url) if u)
 
-    sources: List[EmbeddedMediaSource] = []
-    if kind == "image" and thumb is not None:
-        by_width: Dict[int, EmbeddedMediaSource] = {}
-        for v in thumb.variants:
-            if v.preview_url and v.width and v.width not in by_width:
-                by_width[v.width] = EmbeddedMediaSource(url=v.preview_url, width=v.width, height=v.height)
-                links.append((v.preview_url, v.preview_url_expires_in))
-        sources = [by_width[w] for w in sorted(by_width)]
+    sources = _poster_sources(thumb, links) if kind in ("image", "video") else []
 
     width, height = _dimensions(asset, kind)
     return EmbeddedMedia(
@@ -303,7 +300,24 @@ def _from_asset(asset_id: UUID, asset: DeliveryAsset) -> EmbeddedMedia:
     )
 
 
-def _thumbnail_rendition(asset: DeliveryAsset) -> Optional[DeliveryRendition]:
+def _poster_sources(
+    thumb: Optional[DeliveryRendition], links: List[Tuple[str, Optional[int]]]
+) -> List[EmbeddedMediaSource]:
+    """The thumbnail rendition's sizes, smallest first, one per width (the
+    first listed wins); each link joins ``links`` for the expiry."""
+    if thumb is None:
+        return []
+    by_width: Dict[int, EmbeddedMediaSource] = {}
+    for v in thumb.variants:
+        if v.preview_url and v.width and v.width not in by_width:
+            by_width[v.width] = EmbeddedMediaSource(url=v.preview_url, width=v.width, height=v.height)
+            links.append((v.preview_url, v.preview_url_expires_in))
+    return [by_width[w] for w in sorted(by_width)]
+
+
+def _thumbnail_rendition(asset: Optional[DeliveryAsset]) -> Optional[DeliveryRendition]:
+    if asset is None:
+        return None
     for rendition in asset.renditions:
         if rendition.rendition_type == _THUMBNAIL_RENDITION_TYPE and rendition.preview_url:
             return rendition

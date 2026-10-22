@@ -23,6 +23,7 @@ DASH = "https://stream.test/s/stoken/{id}/manifest.mpd"
 THUMB = "https://media.test/o/{id}/thumb-1024.webp"
 THUMB_TOKENED = "https://media.test/o/{id}/thumb-1024.webp?token=thumb"
 SIZES = {256: "https://media.test/o/{id}/256.webp", 512: "https://media.test/o/{id}/512.webp"}
+STILLS = {120: "https://media.test/o/{id}/default.webp", 1280: "https://media.test/o/{id}/maxres.webp"}
 # Links no denied user may see.
 SECRETS = (DOWNLOAD, HLS, DASH, "https://media.test/o/{id}/720p.m3u8")
 
@@ -43,7 +44,12 @@ def _video(asset_id, *, thumb_expires: Optional[int] = None, status: str = "read
                  {"name": "1080p", "width": 1920, "height": 1080},
              ]},
             {"id": str(uuid4()), "renditionType": "thumbnail", "status": "ready", "entrypoint": "t.webp",
-             "variants": [{"name": "default", "width": 120, "height": 90}],
+             "variants": [
+                 {"name": "maxres", "width": 1280, "height": 720,
+                  "previewUrl": STILLS[1280].format(id=asset_id), "previewUrlExpiresIn": thumb_expires},
+                 {"name": "default", "width": 120, "height": 90,
+                  "previewUrl": STILLS[120].format(id=asset_id), "previewUrlExpiresIn": thumb_expires},
+             ],
              "previewUrl": thumb.format(id=asset_id), "previewUrlType": "gate",
              "previewUrlExpiresIn": thumb_expires},
         ],
@@ -114,7 +120,11 @@ def test_allowed_video_maps_every_link() -> None:
     assert media.streams.dash == DASH.format(id=asset_id)
     # Largest variant outside the (fixed-size) thumbnails.
     assert (media.width, media.height) == (1920, 1080)
-    assert media.sources == []
+    # The still's sizes, smallest first.
+    assert [(s.width, s.height, s.url) for s in media.sources] == [
+        (120, 90, STILLS[120].format(id=asset_id)),
+        (1280, 720, STILLS[1280].format(id=asset_id)),
+    ]
     assert media.alt is None
     # Smallest expiry of the links carried: download 3600, streams 14400.
     assert media.expires_in == 3600
@@ -217,7 +227,9 @@ def test_allowed_and_denied(server) -> None:
     assert embeds[str(allowed)] is embeds[allowed]
     teaser = embeds[denied]
     assert teaser.url is None
-    assert teaser.streams is None and teaser.sources == []
+    assert teaser.streams is None
+    # A locked video still shows its still at every size.
+    assert [s.width for s in teaser.sources] == [120, 1280]
     assert teaser.poster == THUMB.format(id=denied)
     assert teaser.kind == "video"
     assert teaser.width is None and teaser.height is None

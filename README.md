@@ -1270,18 +1270,23 @@ def list_articles(user, response):
   "url": "https://…/o/…?token=…", "poster": "https://…",
   "width": 1920, "height": 1080, "alt": null,
   "streams": {"hls": "https://…/master.m3u8", "dash": "https://…/manifest.mpd"},
-  "sources": [],
+  "sources": [
+    {"url": "https://…/default.webp", "width": 120, "height": 90},
+    {"url": "https://…/maxres.webp", "width": 1280, "height": 720}
+  ],
   "expiresIn": 3600, "public": false
 }
 ```
 
 - **Denied ids** get `url: null` and `streams: null`, and at most a
-  `poster` (the public teaser), never a download or stream link. Missing
+  `poster` (the public teaser) with its `sources`, never a download or stream link. Missing
   assets look the same. `thumbnails=False` does not send denied ids to the
   media library at all.
 - **`url`** is the asset's file, and is null until the asset is `ready`.
   **`poster`** is the image to show for the asset: a video's still, an
-  image's thumbnail rendition. **`sources`** are an image's sizes, smallest first, for `srcset`.
+  image's thumbnail rendition. **`sources`** are the poster's sizes (an image's thumbnails, a video's
+  stills), smallest first, for `srcset`: `poster` stays the one URL for places that take one
+  (`<video poster>`, `og:image`).
   **`width` / `height`** are the largest size media has (for the aspect
   ratio). **`alt`** is never set by media: fill it from your data
   (`media.model_copy(update={"alt": article.title})`).
